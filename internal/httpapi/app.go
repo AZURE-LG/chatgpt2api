@@ -60,13 +60,17 @@ func NewApp() (*App, error) {
 	app.register = service.NewRegisterService(cfg.DataDir, accounts)
 	app.tasks = service.NewImageTaskService(filepath.Join(cfg.DataDir, "image_tasks.json"),
 		func(ctx context.Context, payload map[string]any) (map[string]any, error) {
-			result, _, err := engine.HandleImageGenerations(ctx, payload)
-			return result, err
+			return app.runLoggedImageTask(ctx, payload, "/api/image-tasks/generations", "文生图", func(ctx context.Context, payload map[string]any) (map[string]any, error) {
+				result, _, err := engine.HandleImageGenerations(ctx, payload)
+				return result, err
+			})
 		},
 		func(ctx context.Context, payload map[string]any) (map[string]any, error) {
-			images, _ := payload["images"].([]protocol.UploadedImage)
-			result, _, err := engine.HandleImageEdits(ctx, payload, images)
-			return result, err
+			return app.runLoggedImageTask(ctx, payload, "/api/image-tasks/edits", "图生图", func(ctx context.Context, payload map[string]any) (map[string]any, error) {
+				images, _ := payload["images"].([]protocol.UploadedImage)
+				result, _, err := engine.HandleImageEdits(ctx, payload, images)
+				return result, err
+			})
 		},
 		cfg.ImageRetentionDays,
 	)
@@ -561,6 +565,24 @@ func (a *App) logCall(summary, endpoint, model string, started time.Time, status
 		suffix = "调用失败"
 	}
 	a.logs.Add(service.LogTypeCall, summary+suffix, detail)
+}
+
+func (a *App) runLoggedImageTask(ctx context.Context, payload map[string]any, endpoint, summary string, run func(context.Context, map[string]any) (map[string]any, error)) (map[string]any, error) {
+	start := time.Now()
+	model := util.Clean(payload["model"])
+	result, err := run(ctx, payload)
+	if err != nil {
+		a.logCall(summary, endpoint, model, start, "failed", err.Error(), nil)
+		return result, err
+	}
+	urls := collectURLs(result)
+	if len(util.AsMapSlice(result["data"])) == 0 {
+		message := firstNonEmpty(util.Clean(result["message"]), "image task returned no image data")
+		a.logCall(summary, endpoint, model, start, "failed", message, urls)
+		return result, nil
+	}
+	a.logCall(summary, endpoint, model, start, "success", "", urls)
+	return result, nil
 }
 
 func collectURLs(v any) []string {

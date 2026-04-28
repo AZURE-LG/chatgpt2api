@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"chatgpt2api/internal/version"
 )
@@ -97,6 +98,61 @@ func TestAppAuthAndSPACompatibility(t *testing.T) {
 	if res.Code != http.StatusNotFound {
 		t.Fatalf("missing asset status = %d", res.Code)
 	}
+}
+
+func TestImageTaskFailureWritesCallLog(t *testing.T) {
+	app := newTestApp(t)
+	defer app.Close()
+
+	req := httptest.NewRequest(http.MethodPost, "/api/image-tasks/generations", strings.NewReader(`{"client_task_id":"task-log-test","prompt":"test image"}`))
+	req.Header.Set("Authorization", "Bearer admin-secret")
+	res := httptest.NewRecorder()
+	app.Handler().ServeHTTP(res, req)
+	if res.Code != http.StatusOK {
+		t.Fatalf("submit image task status = %d body = %s", res.Code, res.Body.String())
+	}
+
+	var logs map[string]any
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		req = httptest.NewRequest(http.MethodGet, "/api/logs?type=call", nil)
+		req.Header.Set("Authorization", "Bearer admin-secret")
+		res = httptest.NewRecorder()
+		app.Handler().ServeHTTP(res, req)
+		if res.Code != http.StatusOK {
+			t.Fatalf("logs status = %d body = %s", res.Code, res.Body.String())
+		}
+		if err := json.Unmarshal(res.Body.Bytes(), &logs); err != nil {
+			t.Fatalf("logs json: %v", err)
+		}
+		if len(logItems(logs)) > 0 {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	items := logItems(logs)
+	if len(items) == 0 {
+		t.Fatalf("expected image task failure to write a call log, got %#v", logs)
+	}
+	item := items[0]
+	if item["type"] != "call" || item["summary"] != "文生图调用失败" {
+		t.Fatalf("unexpected call log item: %#v", item)
+	}
+	detail, _ := item["detail"].(map[string]any)
+	if detail["endpoint"] != "/api/image-tasks/generations" || detail["status"] != "failed" {
+		t.Fatalf("unexpected call log detail: %#v", detail)
+	}
+}
+
+func logItems(payload map[string]any) []map[string]any {
+	rawItems, _ := payload["items"].([]any)
+	items := make([]map[string]any, 0, len(rawItems))
+	for _, raw := range rawItems {
+		if item, ok := raw.(map[string]any); ok {
+			items = append(items, item)
+		}
+	}
+	return items
 }
 
 func newTestApp(t *testing.T) *App {
