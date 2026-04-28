@@ -5,10 +5,8 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
-	"sort"
 	"strings"
 	"sync"
-	"time"
 
 	"chatgpt2api/internal/util"
 )
@@ -175,17 +173,4 @@ func maskBase64(value string) string {
 		return value[:idx+1] + maskString(value[idx+1:], 24)
 	}
 	return maskString(value, 24)
-}
-
-func sortedKeys(m map[string]any) []string {
-	keys := make([]string, 0, len(m))
-	for key := range m {
-		keys = append(keys, key)
-	}
-	sort.Strings(keys)
-	return keys
-}
-
-func durationMS(start time.Time) int64 {
-	return time.Since(start).Milliseconds()
 }

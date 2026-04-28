@@ -2,6 +2,7 @@
 build/
 dist/
 web_dist
+chatgpt2api.exe
 
 .idea
 node_modules/

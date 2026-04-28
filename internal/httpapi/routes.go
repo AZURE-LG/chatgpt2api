@@ -31,8 +31,26 @@ func (a *App) handleUserKeys(w http.ResponseWriter, r *http.Request) {
 		}
 		return
 	}
-	keyID := strings.TrimPrefix(r.URL.Path, base+"/")
-	if keyID == "" || strings.Contains(keyID, "/") {
+	parts := splitPath(r.URL.Path)
+	if len(parts) < 4 || parts[0] != "api" || parts[1] != "auth" || parts[2] != "users" {
+		http.NotFound(w, r)
+		return
+	}
+	keyID := parts[3]
+	if len(parts) == 5 && parts[4] == "key" {
+		if r.Method != http.MethodGet {
+			w.WriteHeader(http.StatusMethodNotAllowed)
+			return
+		}
+		key, found := a.auth.RevealKey(keyID, "user")
+		if !found {
+			util.WriteError(w, http.StatusNotFound, "user key not found")
+			return
+		}
+		util.WriteJSON(w, http.StatusOK, map[string]any{"key": key})
+		return
+	}
+	if len(parts) != 4 {
 		http.NotFound(w, r)
 		return
 	}

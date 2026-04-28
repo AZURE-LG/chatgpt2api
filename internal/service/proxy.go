@@ -12,6 +12,9 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/enetx/g"
+	"github.com/enetx/surf"
 )
 
 type ProxyConfig interface {
@@ -28,6 +31,14 @@ func NewProxyService(config ProxyConfig) *ProxyService {
 
 func (s *ProxyService) HTTPClient(timeout time.Duration) *http.Client {
 	return &http.Client{Timeout: timeout, Transport: transportForProxy(s.config.Proxy())}
+}
+
+func (s *ProxyService) BrowserHTTPClient(timeout time.Duration) *http.Client {
+	return browserHTTPClient(s.config.Proxy(), timeout)
+}
+
+func (s *ProxyService) BrowserHTTPClientWithProfile(profile string, timeout time.Duration) *http.Client {
+	return browserHTTPClientForProfile(s.config.Proxy(), profile, timeout)
 }
 
 func (s *ProxyService) Test(candidate string, timeout time.Duration) map[string]any {
@@ -59,6 +70,50 @@ func (s *ProxyService) Test(candidate string, timeout time.Duration) map[string]
 		message = resp.Status
 	}
 	return map[string]any{"ok": ok, "status": resp.StatusCode, "latency_ms": latency, "error": message}
+}
+
+func browserHTTPClient(proxy string, timeout time.Duration) *http.Client {
+	return browserHTTPClientForProfile(proxy, "", timeout)
+}
+
+func browserHTTPClientForProfile(proxy, profile string, timeout time.Duration) *http.Client {
+	builder := surf.NewClient().
+		Builder().
+		SecureTLS()
+	builder = applyBrowserProfile(builder, profile).
+		Session().
+		Timeout(timeout)
+
+	if proxy = strings.TrimSpace(proxy); proxy != "" {
+		builder = builder.Proxy(g.String(proxy))
+	}
+
+	client, err := builder.Build().Result()
+	if err != nil {
+		return &http.Client{Timeout: timeout, Transport: transportForProxy(proxy)}
+	}
+	return client.Std()
+}
+
+func applyBrowserProfile(builder *surf.Builder, profile string) *surf.Builder {
+	impersonate := builder.Impersonate()
+	normalized := strings.ToLower(strings.TrimSpace(profile))
+	switch {
+	case strings.Contains(normalized, "android"):
+		impersonate = impersonate.Android()
+	case strings.Contains(normalized, "ios"), strings.Contains(normalized, "iphone"), strings.Contains(normalized, "ipad"):
+		impersonate = impersonate.IOS()
+	case strings.Contains(normalized, "mac"), strings.Contains(normalized, "darwin"):
+		impersonate = impersonate.MacOS()
+	case strings.Contains(normalized, "linux"):
+		impersonate = impersonate.Linux()
+	default:
+		impersonate = impersonate.Windows()
+	}
+	if strings.Contains(normalized, "firefox") || strings.Contains(normalized, "ff") {
+		return impersonate.Firefox()
+	}
+	return impersonate.Chrome()
 }
 
 func transportForProxy(candidate string) *http.Transport {
@@ -103,7 +158,9 @@ func socks5DialContext(proxyURL *url.URL) func(context.Context, string, string) 
 		}
 		if deadline, ok := ctx.Deadline(); ok {
 			_ = conn.SetDeadline(deadline)
-			defer conn.SetDeadline(time.Time{})
+			defer func() {
+				_ = conn.SetDeadline(time.Time{})
+			}()
 		}
 		if err := socks5Handshake(ctx, conn, proxyURL, address); err != nil {
 			_ = conn.Close()

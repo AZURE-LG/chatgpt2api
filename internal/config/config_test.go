@@ -66,6 +66,40 @@ func TestStoreUpdatePersistsSettingsWithoutAuthKey(t *testing.T) {
 	}
 }
 
+func TestNewStoreDiscoversEnvFromParentDirectory(t *testing.T) {
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, ".env"), []byte("CHATGPT2API_AUTH_KEY=from-parent-env\n"), 0o644); err != nil {
+		t.Fatalf("write .env: %v", err)
+	}
+	nested := filepath.Join(root, "cmd", "chatgpt2api")
+	if err := os.MkdirAll(nested, 0o755); err != nil {
+		t.Fatalf("mkdir nested: %v", err)
+	}
+	originalWD, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("Getwd() error = %v", err)
+	}
+	if err := os.Chdir(nested); err != nil {
+		t.Fatalf("Chdir() error = %v", err)
+	}
+	t.Cleanup(func() {
+		_ = os.Chdir(originalWD)
+	})
+	unsetEnv(t, "CHATGPT2API_ROOT")
+	unsetEnv(t, "CHATGPT2API_AUTH_KEY")
+
+	store, err := NewStore()
+	if err != nil {
+		t.Fatalf("NewStore() error = %v", err)
+	}
+	if store.RootDir != root {
+		t.Fatalf("RootDir = %q, want %q", store.RootDir, root)
+	}
+	if store.AuthKey() != "from-parent-env" {
+		t.Fatalf("AuthKey() = %q", store.AuthKey())
+	}
+}
+
 func unsetEnv(t *testing.T, key string) {
 	t.Helper()
 	original, existed := os.LookupEnv(key)

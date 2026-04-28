@@ -226,9 +226,7 @@ func (e *Engine) ImageChatEvents(ctx context.Context, body map[string]any) (<-ch
 				content = BuildChatImageMarkdownContent(map[string]any{"data": output.Data})
 			case "message":
 				content = output.Text
-				if strings.HasPrefix(content, sentText) {
-					content = content[len(sentText):]
-				}
+				content = strings.TrimPrefix(content, sentText)
 			}
 			if content == "" {
 				continue
@@ -422,7 +420,8 @@ func (e *Engine) ResponseEvents(ctx context.Context, body map[string]any) (<-cha
 		size = ""
 	}
 	outputs, errCh := e.StreamImageOutputsWithPool(ctx, ConversationRequest{Prompt: prompt, Model: model, Size: size, ResponseFormat: "b64_json", Images: images})
-	return StreamImageResponse(outputs, prompt, model), errCh, nil
+	events, responseErr := StreamImageResponse(outputs, prompt, model)
+	return events, combineErrorChannels(errCh, responseErr), nil
 }
 
 func nilOnClosed() <-chan error {
@@ -449,7 +448,7 @@ func (e *Engine) StreamTextResponse(ctx context.Context, body map[string]any) <-
 			full += delta
 			out <- map[string]any{"type": "response.output_text.delta", "item_id": itemID, "output_index": 0, "content_index": 0, "delta": delta}
 		}
-		_ = <-errCh
+		<-errCh
 		out <- map[string]any{"type": "response.output_text.done", "item_id": itemID, "output_index": 0, "content_index": 0, "text": full}
 		item := TextOutputItem(full, itemID, "completed")
 		out <- map[string]any{"type": "response.output_item.done", "output_index": 0, "item": item}
@@ -458,10 +457,33 @@ func (e *Engine) StreamTextResponse(ctx context.Context, body map[string]any) <-
 	return out
 }
 
-func StreamImageResponse(outputs <-chan ImageOutput, prompt, model string) <-chan map[string]any {
-	out := make(chan map[string]any)
+func combineErrorChannels(first, second <-chan error) <-chan error {
+	out := make(chan error, 1)
 	go func() {
 		defer close(out)
+		var firstErr error
+		var secondErr error
+		if first != nil {
+			firstErr = <-first
+		}
+		if second != nil {
+			secondErr = <-second
+		}
+		if firstErr != nil {
+			out <- firstErr
+			return
+		}
+		out <- secondErr
+	}()
+	return out
+}
+
+func StreamImageResponse(outputs <-chan ImageOutput, prompt, model string) (<-chan map[string]any, <-chan error) {
+	out := make(chan map[string]any)
+	errCh := make(chan error, 1)
+	go func() {
+		defer close(out)
+		defer close(errCh)
 		responseID := "resp_" + util.NewHex(32)
 		created := time.Now().Unix()
 		out <- ResponseCreated(responseID, model, created)
@@ -472,6 +494,7 @@ func StreamImageResponse(outputs <-chan ImageOutput, prompt, model string) <-cha
 				out <- map[string]any{"type": "response.output_text.done", "item_id": item["id"], "output_index": 0, "content_index": 0, "text": output.Text}
 				out <- map[string]any{"type": "response.output_item.done", "output_index": 0, "item": item}
 				out <- ResponseCompleted(responseID, model, created, []map[string]any{item})
+				errCh <- nil
 				return
 			}
 			if output.Kind != "result" {
@@ -482,11 +505,13 @@ func StreamImageResponse(outputs <-chan ImageOutput, prompt, model string) <-cha
 				item := items[0]
 				out <- map[string]any{"type": "response.output_item.done", "output_index": 0, "item": item}
 				out <- ResponseCompleted(responseID, model, created, []map[string]any{item})
+				errCh <- nil
 				return
 			}
 		}
+		errCh <- fmt.Errorf("image generation failed")
 	}()
-	return out
+	return out, errCh
 }
 
 func ResponseCreated(id, model string, created int64) map[string]any {

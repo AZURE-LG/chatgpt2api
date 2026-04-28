@@ -24,6 +24,9 @@ func TestAuthServiceCreateAuthenticateDisableAndDelete(t *testing.T) {
 	if _, ok := public["key_hash"]; ok {
 		t.Fatalf("public key item leaked key_hash: %#v", public)
 	}
+	if _, ok := public["key"]; ok {
+		t.Fatalf("public key item leaked raw key: %#v", public)
+	}
 
 	identity := auth.Authenticate(raw)
 	if identity == nil {
@@ -34,6 +37,11 @@ func TestAuthServiceCreateAuthenticateDisableAndDelete(t *testing.T) {
 	}
 
 	keyID, _ := public["id"].(string)
+	revealed, found := auth.RevealKey(keyID, "user")
+	if !found || revealed != raw {
+		t.Fatalf("RevealKey() = %q, %v; want raw, true", revealed, found)
+	}
+
 	updated := auth.UpdateKey(keyID, map[string]any{"enabled": false}, "user")
 	if updated == nil {
 		t.Fatal("UpdateKey() returned nil")

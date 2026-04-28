@@ -28,9 +28,24 @@ func TestAppAuthAndSPACompatibility(t *testing.T) {
 		t.Fatalf("created user = %#v", user)
 	}
 
-	req := httptest.NewRequest(http.MethodPost, "/auth/login", nil)
-	req.Header.Set("Authorization", "Bearer "+rawKey)
+	req := httptest.NewRequest(http.MethodGet, "/api/auth/users/"+user["id"].(string)+"/key", nil)
+	req.Header.Set("Authorization", "Bearer admin-secret")
 	res := httptest.NewRecorder()
+	app.Handler().ServeHTTP(res, req)
+	if res.Code != http.StatusOK {
+		t.Fatalf("reveal user key status = %d body = %s", res.Code, res.Body.String())
+	}
+	var revealed map[string]any
+	if err := json.Unmarshal(res.Body.Bytes(), &revealed); err != nil {
+		t.Fatalf("reveal json: %v", err)
+	}
+	if revealed["key"] != rawKey {
+		t.Fatalf("revealed key = %#v, want raw key", revealed["key"])
+	}
+
+	req = httptest.NewRequest(http.MethodPost, "/auth/login", nil)
+	req.Header.Set("Authorization", "Bearer "+rawKey)
+	res = httptest.NewRecorder()
 	app.Handler().ServeHTTP(res, req)
 	if res.Code != http.StatusOK {
 		t.Fatalf("/auth/login status = %d body = %s", res.Code, res.Body.String())

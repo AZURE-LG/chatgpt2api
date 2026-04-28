@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import { Ban, CheckCircle2, Copy, KeyRound, LoaderCircle, Plus, Trash2 } from "lucide-react";
+import { Ban, CheckCircle2, Copy, Eye, KeyRound, LoaderCircle, Plus, Trash2 } from "lucide-react";
 import { toast } from "sonner";
 
 import { Badge } from "@/components/ui/badge";
@@ -16,7 +16,7 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
-import { createUserKey, deleteUserKey, fetchUserKeys, updateUserKey, type UserKey } from "@/lib/api";
+import { createUserKey, deleteUserKey, fetchUserKeys, revealUserKey, updateUserKey, type UserKey } from "@/lib/api";
 
 function formatDateTime(value?: string | null) {
   if (!value) {
@@ -43,7 +43,10 @@ export function UserKeysCard() {
   const [name, setName] = useState("");
   const [isCreating, setIsCreating] = useState(false);
   const [pendingIds, setPendingIds] = useState<Set<string>>(() => new Set());
+  const [revealingIds, setRevealingIds] = useState<Set<string>>(() => new Set());
   const [revealedKey, setRevealedKey] = useState("");
+  const [revealedKeyName, setRevealedKeyName] = useState("");
+  const [revealedKeyItemId, setRevealedKeyItemId] = useState("");
   const [deletingItem, setDeletingItem] = useState<UserKey | null>(null);
 
   const load = async () => {
@@ -72,6 +75,8 @@ export function UserKeysCard() {
       const data = await createUserKey(name.trim());
       setItems(data.items);
       setRevealedKey(data.key);
+      setRevealedKeyName(data.item.name);
+      setRevealedKeyItemId(data.item.id);
       setName("");
       setIsDialogOpen(false);
       toast.success("用户密钥已创建");
@@ -84,6 +89,18 @@ export function UserKeysCard() {
 
   const setItemPending = (id: string, isPending: boolean) => {
     setPendingIds((current) => {
+      const next = new Set(current);
+      if (isPending) {
+        next.add(id);
+      } else {
+        next.delete(id);
+      }
+      return next;
+    });
+  };
+
+  const setRevealPending = (id: string, isPending: boolean) => {
+    setRevealingIds((current) => {
       const next = new Set(current);
       if (isPending) {
         next.add(id);
@@ -117,11 +134,31 @@ export function UserKeysCard() {
       const data = await deleteUserKey(item.id);
       setItems(data.items);
       setDeletingItem(null);
+      if (revealedKeyItemId === item.id) {
+        setRevealedKey("");
+        setRevealedKeyName("");
+        setRevealedKeyItemId("");
+      }
       toast.success("用户密钥已删除");
     } catch (error) {
       toast.error(error instanceof Error ? error.message : "删除用户密钥失败");
     } finally {
       setItemPending(item.id, false);
+    }
+  };
+
+  const handleReveal = async (item: UserKey) => {
+    setRevealPending(item.id, true);
+    try {
+      const data = await revealUserKey(item.id);
+      setRevealedKey(data.key);
+      setRevealedKeyName(item.name);
+      setRevealedKeyItemId(item.id);
+      toast.success("用户密钥已显示");
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "查看用户密钥失败");
+    } finally {
+      setRevealPending(item.id, false);
     }
   };
 
@@ -156,7 +193,7 @@ export function UserKeysCard() {
 
           {revealedKey ? (
             <div className="rounded-xl border border-emerald-200 bg-emerald-50 px-4 py-4 text-sm text-emerald-900">
-              <div className="font-medium">新密钥仅展示一次，请立即保存：</div>
+              <div className="font-medium">{revealedKeyName ? `「${revealedKeyName}」密钥已显示：` : "用户密钥已显示："}</div>
               <div className="mt-3 flex flex-col gap-3 rounded-lg border border-emerald-200 bg-white/80 p-3 md:flex-row md:items-center md:justify-between">
                 <code className="break-all font-mono text-[13px]">{revealedKey}</code>
                 <Button
@@ -184,6 +221,7 @@ export function UserKeysCard() {
             <div className="space-y-3">
               {items.map((item) => {
                 const isPending = pendingIds.has(item.id);
+                const isRevealing = revealingIds.has(item.id);
                 return (
                   <div key={item.id} className="flex flex-col gap-3 rounded-xl border border-stone-200 bg-white px-4 py-4 md:flex-row md:items-center md:justify-between">
                     <div className="min-w-0 space-y-2">
@@ -200,6 +238,16 @@ export function UserKeysCard() {
                     </div>
 
                     <div className="flex items-center gap-2">
+                      <Button
+                        type="button"
+                        variant="outline"
+                        className="h-9 rounded-xl border-stone-200 bg-white px-4 text-stone-700"
+                        onClick={() => void handleReveal(item)}
+                        disabled={isRevealing}
+                      >
+                        {isRevealing ? <LoaderCircle className="size-4 animate-spin" /> : <Eye className="size-4" />}
+                        查看
+                      </Button>
                       <Button
                         type="button"
                         variant="outline"
@@ -240,7 +288,7 @@ export function UserKeysCard() {
           <DialogHeader className="gap-2">
             <DialogTitle>创建用户密钥</DialogTitle>
             <DialogDescription className="text-sm leading-6">
-              可选填写一个备注名称，方便区分不同使用者；创建后会生成一条只能查看一次的原始密钥。
+              可选填写一个备注名称，方便区分不同使用者；创建后可在列表中通过查看按钮再次查看原始密钥。
             </DialogDescription>
           </DialogHeader>
           <div className="space-y-2">

@@ -40,14 +40,10 @@ type Store struct {
 }
 
 func NewStore() (*Store, error) {
-	root, err := os.Getwd()
+	root, err := resolveRootDir()
 	if err != nil {
 		return nil, err
 	}
-	if configured := strings.TrimSpace(os.Getenv("CHATGPT2API_ROOT")); configured != "" {
-		root = configured
-	}
-	root, _ = filepath.Abs(root)
 
 	s := &Store{
 		RootDir:         root,
@@ -69,6 +65,59 @@ func NewStore() (*Store, error) {
 		return nil, errors.New("auth-key 未设置，请设置 CHATGPT2API_AUTH_KEY 或在 .env 中填写 CHATGPT2API_AUTH_KEY")
 	}
 	return s, nil
+}
+
+func resolveRootDir() (string, error) {
+	cwd, err := os.Getwd()
+	if err != nil {
+		return "", err
+	}
+	if configured := strings.TrimSpace(os.Getenv("CHATGPT2API_ROOT")); configured != "" {
+		return filepath.Abs(configured)
+	}
+	if root := findAncestorWithFile(cwd, ".env"); root != "" {
+		return root, nil
+	}
+	if root := findAncestorWithProjectGoMod(cwd); root != "" {
+		return root, nil
+	}
+	return filepath.Abs(cwd)
+}
+
+func findAncestorWithFile(start, name string) string {
+	dir, err := filepath.Abs(start)
+	if err != nil {
+		return ""
+	}
+	for {
+		info, statErr := os.Stat(filepath.Join(dir, name))
+		if statErr == nil && !info.IsDir() {
+			return dir
+		}
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			return ""
+		}
+		dir = parent
+	}
+}
+
+func findAncestorWithProjectGoMod(start string) string {
+	dir, err := filepath.Abs(start)
+	if err != nil {
+		return ""
+	}
+	for {
+		data, readErr := os.ReadFile(filepath.Join(dir, "go.mod"))
+		if readErr == nil && strings.Contains(string(data), "module chatgpt2api") {
+			return dir
+		}
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			return ""
+		}
+		dir = parent
+	}
 }
 
 func (s *Store) AuthKey() string {

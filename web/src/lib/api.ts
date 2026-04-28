@@ -343,6 +343,10 @@ export async function createUserKey(name: string) {
   });
 }
 
+export async function revealUserKey(keyId: string) {
+  return httpRequest<{ key: string }>(`/api/auth/users/${keyId}/key`);
+}
+
 export async function updateUserKey(keyId: string, updates: { enabled?: boolean; name?: string }) {
   return httpRequest<{ item: UserKey; items: UserKey[] }>(`/api/auth/users/${keyId}`, {
     method: "POST",

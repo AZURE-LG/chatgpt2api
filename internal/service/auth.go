@@ -61,6 +61,7 @@ func (s *AuthService) CreateKey(role, name string) (map[string]any, string, erro
 		"id":           util.NewHex(12),
 		"name":         name,
 		"role":         role,
+		"key":          raw,
 		"key_hash":     util.SHA256Hex(raw),
 		"enabled":      true,
 		"created_at":   util.NowISO(),
@@ -73,6 +74,26 @@ func (s *AuthService) CreateKey(role, name string) (map[string]any, string, erro
 		return nil, "", err
 	}
 	return publicAuthItem(item), raw, nil
+}
+
+func (s *AuthService) RevealKey(id, role string) (string, bool) {
+	id = util.Clean(id)
+	if id == "" {
+		return "", false
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, item := range s.items {
+		if item["id"] != id || (role != "" && item["role"] != role) {
+			continue
+		}
+		raw := util.Clean(item["key"])
+		if raw == "" {
+			return "", false
+		}
+		return raw, true
+	}
+	return "", false
 }
 
 func (s *AuthService) UpdateKey(id string, updates map[string]any, role string) map[string]any {
@@ -185,8 +206,15 @@ func normalizeAuthItem(raw map[string]any) map[string]any {
 	if role != "admin" && role != "user" {
 		return nil
 	}
+	key := util.Clean(raw["key"])
+	if key == "" {
+		return nil
+	}
 	hash := util.Clean(raw["key_hash"])
 	if hash == "" {
+		return nil
+	}
+	if util.SHA256Hex(key) != hash {
 		return nil
 	}
 	id := util.Clean(raw["id"])
@@ -213,6 +241,7 @@ func normalizeAuthItem(raw map[string]any) map[string]any {
 		"id":           id,
 		"name":         name,
 		"role":         role,
+		"key":          key,
 		"key_hash":     hash,
 		"enabled":      util.ToBool(util.ValueOr(raw["enabled"], true)),
 		"created_at":   created,

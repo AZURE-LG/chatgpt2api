@@ -84,6 +84,24 @@ func NewImageGenerationError(message string) *ImageGenerationError {
 	return &ImageGenerationError{Message: message, StatusCode: 502, Type: "server_error", Code: "upstream_error"}
 }
 
+func imageStreamErrorMessage(message string) string {
+	text := strings.TrimSpace(message)
+	lower := strings.ToLower(text)
+	if strings.Contains(lower, "cf_chl") ||
+		strings.Contains(lower, "challenge-platform") ||
+		strings.Contains(lower, "enable javascript and cookies to continue") ||
+		strings.Contains(lower, "cloudflare challenge") {
+		return "upstream returned Cloudflare challenge page; refresh browser fingerprint/session or change proxy"
+	}
+	if strings.Contains(lower, "curl: (35)") || strings.Contains(lower, "tls connect error") || strings.Contains(lower, "openssl_internal") {
+		return "upstream image connection failed, please retry later"
+	}
+	if text == "" {
+		return "image generation failed"
+	}
+	return text
+}
+
 func (o ImageOutput) Chunk() map[string]any {
 	chunk := map[string]any{
 		"object":              "image.generation.chunk",
@@ -325,12 +343,12 @@ func (e *Engine) StreamImageOutputsWithPool(ctx context.Context, request Convers
 					e.Accounts.RemoveInvalidToken(token, "image_stream")
 					continue
 				}
-				errCh <- NewImageGenerationError(lastError)
+				errCh <- NewImageGenerationError(imageStreamErrorMessage(lastError))
 				return
 			}
 		}
 		if !emitted {
-			errCh <- NewImageGenerationError(firstNonEmpty(lastError, "image generation failed"))
+			errCh <- NewImageGenerationError(imageStreamErrorMessage(lastError))
 			return
 		}
 		errCh <- nil

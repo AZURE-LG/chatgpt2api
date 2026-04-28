@@ -31,6 +31,12 @@ type AccountService struct {
 	items   []map[string]any
 }
 
+const (
+	defaultRemoteUserAgent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/145.0.0.0 Safari/537.36"
+	defaultRemoteSecCHUA   = `"Not:A-Brand";v="99", "Google Chrome";v="145", "Chromium";v="145"`
+	defaultRemoteProfile   = "chrome145"
+)
+
 func NewAccountService(backend storage.Backend, config AccountConfig, proxy *ProxyService, logs *LogService) *AccountService {
 	s := &AccountService{storage: backend, config: config, proxy: proxy, logs: logs}
 	s.items = s.loadAccounts()
@@ -372,7 +378,7 @@ func (s *AccountService) FetchRemoteInfo(ctx context.Context, accessToken string
 		return nil, fmt.Errorf("access_token is required")
 	}
 	headers := s.remoteHeaders(accessToken)
-	client := s.proxy.HTTPClient(30 * time.Second)
+	client := s.proxy.BrowserHTTPClientWithProfile(s.remoteImpersonation(accessToken), 30*time.Second)
 	type response struct {
 		payload map[string]any
 		err     error
@@ -522,6 +528,11 @@ func (s *AccountService) remoteHeaders(accessToken string) map[string]string {
 	account := s.GetAccount(accessToken)
 	clean := func(keys ...string) string {
 		for _, key := range keys {
+			if raw, ok := account["fp"].(map[string]any); ok {
+				if value := util.Clean(raw[key]); value != "" {
+					return value
+				}
+			}
 			if value := util.Clean(account[key]); value != "" {
 				return value
 			}
@@ -539,8 +550,8 @@ func (s *AccountService) remoteHeaders(accessToken string) map[string]string {
 		"sec-fetch-dest":     "empty",
 		"sec-fetch-mode":     "cors",
 		"sec-fetch-site":     "same-origin",
-		"user-agent":         firstNonEmpty(clean("user-agent", "user_agent"), "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"),
-		"sec-ch-ua":          firstNonEmpty(clean("sec-ch-ua"), `"Google Chrome";v="147", "Not.A/Brand";v="8", "Chromium";v="147"`),
+		"user-agent":         firstNonEmpty(clean("user-agent", "user_agent"), defaultRemoteUserAgent),
+		"sec-ch-ua":          firstNonEmpty(clean("sec-ch-ua"), defaultRemoteSecCHUA),
 		"sec-ch-ua-mobile":   firstNonEmpty(clean("sec-ch-ua-mobile"), "?0"),
 		"sec-ch-ua-platform": firstNonEmpty(clean("sec-ch-ua-platform"), `"Windows"`),
 	}
@@ -551,6 +562,16 @@ func (s *AccountService) remoteHeaders(accessToken string) map[string]string {
 		headers["oai-session-id"] = sessionID
 	}
 	return headers
+}
+
+func (s *AccountService) remoteImpersonation(accessToken string) string {
+	account := s.GetAccount(accessToken)
+	if raw, ok := account["fp"].(map[string]any); ok {
+		if value := util.Clean(raw["impersonate"]); value != "" {
+			return value
+		}
+	}
+	return firstNonEmpty(util.Clean(account["impersonate"]), defaultRemoteProfile)
 }
 
 func (s *AccountService) detectAccountType(accessToken string, mePayload, initPayload map[string]any) string {

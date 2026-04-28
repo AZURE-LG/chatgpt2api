@@ -9,7 +9,6 @@ import (
 	"fmt"
 	"math/rand"
 	"regexp"
-	"strings"
 	"time"
 
 	"chatgpt2api/internal/util"
@@ -19,7 +18,6 @@ const defaultPOWScript = "https://chatgpt.com/backend-api/sentinel/sdk.js"
 
 var (
 	scriptSrcRE = regexp.MustCompile(`(?is)<script[^>]+src=["']([^"']+)["']`)
-	dataBuildRE = regexp.MustCompile(`c/[^/]*/_|<html[^>]*data-build=["']([^"']*)["']`)
 )
 
 func parsePOWResources(html string) ([]string, string) {
@@ -69,10 +67,27 @@ func buildPOWConfig(userAgent string, scriptSources []string, dataBuild string) 
 	navigatorKeys := []string{
 		"registerProtocolHandler−function registerProtocolHandler() { [native code] }",
 		"storage−[object StorageManager]", "locks−[object LockManager]", "appCodeName−Mozilla",
-		"permissions−[object Permissions]", "webdriver−false", "vendor−Google Inc.",
-		"hardwareConcurrency−32", "language−zh-CN",
+		"permissions−[object Permissions]", "share−function share() { [native code] }", "webdriver−false",
+		"managed−[object NavigatorManagedData]", "canShare−function canShare() { [native code] }",
+		"vendor−Google Inc.", "mediaDevices−[object MediaDevices]", "vibrate−function vibrate() { [native code] }",
+		"storageBuckets−[object StorageBucketManager]", "mediaCapabilities−[object MediaCapabilities]",
+		"cookieEnabled−true", "virtualKeyboard−[object VirtualKeyboard]", "product−Gecko",
+		"presentation−[object Presentation]", "onLine−true", "mimeTypes−[object MimeTypeArray]",
+		"credentials−[object CredentialsContainer]", "serviceWorker−[object ServiceWorkerContainer]",
+		"keyboard−[object Keyboard]", "gpu−[object GPU]", "doNotTrack", "serial−[object Serial]",
+		"pdfViewerEnabled−true", "language−zh-CN", "geolocation−[object Geolocation]",
+		"userAgentData−[object NavigatorUAData]", "getUserMedia−function getUserMedia() { [native code] }",
+		"sendBeacon−function sendBeacon() { [native code] }", "hardwareConcurrency−32",
+		"windowControlsOverlay−[object WindowControlsOverlay]",
 	}
-	windowKeys := []string{"window", "self", "document", "location", "history", "navigator", "performance", "crypto", "fetch"}
+	windowKeys := []string{
+		"0", "window", "self", "document", "name", "location", "customElements", "history", "navigation",
+		"innerWidth", "innerHeight", "scrollX", "scrollY", "visualViewport", "screenX", "screenY", "outerWidth",
+		"outerHeight", "devicePixelRatio", "screen", "chrome", "navigator", "onresize", "performance", "crypto",
+		"indexedDB", "sessionStorage", "localStorage", "scheduler", "alert", "atob", "btoa", "fetch", "matchMedia",
+		"postMessage", "queueMicrotask", "requestAnimationFrame", "setInterval", "setTimeout", "caches",
+		"__NEXT_DATA__", "__BUILD_MANIFEST", "__NEXT_PRELOADREADY",
+	}
 	documentKeys := []string{"_reactListeningo743lnnpvdg", "location"}
 	cores := []int{8, 16, 24, 32}
 	now := time.Now().In(time.FixedZone("EST", -5*3600)).Format("Mon Jan 02 2006 15:04:05") + " GMT-0500 (Eastern Standard Time)"
@@ -146,9 +161,4 @@ func randomChoiceInt(items []int) int {
 		return 0
 	}
 	return items[rand.Intn(len(items))]
-}
-
-func init() {
-	rand.Seed(time.Now().UnixNano())
-	_ = strings.Builder{}
 }

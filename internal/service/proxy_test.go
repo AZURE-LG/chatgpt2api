@@ -3,7 +3,10 @@ package service
 import (
 	"context"
 	"net"
+	"net/http"
+	"net/http/httptest"
 	"testing"
+	"time"
 )
 
 func TestSOCKS5AddressModes(t *testing.T) {
@@ -34,4 +37,54 @@ func TestSOCKS5AddressModes(t *testing.T) {
 			t.Fatalf("address = %#v, want %#v", got, want)
 		}
 	})
+}
+
+func TestBrowserHTTPClientKeepsSessionAndTimeout(t *testing.T) {
+	client := browserHTTPClient("", 2*time.Second)
+	if client == nil {
+		t.Fatal("browserHTTPClient() returned nil")
+	}
+	if client.Jar == nil {
+		t.Fatal("browserHTTPClient() should enable a cookie jar for browser-like sessions")
+	}
+	if client.Timeout != 2*time.Second {
+		t.Fatalf("Timeout = %s, want %s", client.Timeout, 2*time.Second)
+	}
+}
+
+func TestBrowserHTTPClientPreservesCallerAuthHeaders(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if got := r.Header.Get("Authorization"); got != "Bearer token-1" {
+			t.Fatalf("Authorization = %q", got)
+		}
+		if got := r.Header.Get("Origin"); got != "https://chatgpt.com" {
+			t.Fatalf("Origin = %q", got)
+		}
+		if got := r.Header.Get("Referer"); got != "https://chatgpt.com/" {
+			t.Fatalf("Referer = %q", got)
+		}
+		if got := r.Header.Get("User-Agent"); got == "" {
+			t.Fatal("User-Agent should be populated by browser impersonation")
+		}
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer server.Close()
+
+	client := browserHTTPClient("", 2*time.Second)
+	req, err := http.NewRequest(http.MethodGet, server.URL, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Authorization", "Bearer token-1")
+	req.Header.Set("Origin", "https://chatgpt.com")
+	req.Header.Set("Referer", "https://chatgpt.com/")
+
+	resp, err := client.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusNoContent {
+		t.Fatalf("status = %d", resp.StatusCode)
+	}
 }

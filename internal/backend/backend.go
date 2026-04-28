@@ -28,6 +28,17 @@ const (
 	DefaultClientVersion     = "prod-be885abbfcfe7b1f511e88b3003d9ee44757fbad"
 	DefaultClientBuildNumber = "5955942"
 	CodexImageModel          = "codex-gpt-image-2"
+
+	browserUserAgent              = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/145.0.0.0 Safari/537.36"
+	browserSecCHUA                = `"Not:A-Brand";v="99", "Google Chrome";v="145", "Chromium";v="145"`
+	browserSecCHUAFullVersion     = `"145.0.0.0"`
+	browserSecCHUAFullVersionList = `"Not:A-Brand";v="99.0.0.0", "Google Chrome";v="145.0.0.0", "Chromium";v="145.0.0.0"`
+	browserSecCHUAMobile          = "?0"
+	browserSecCHUAPlatform        = `"Windows"`
+	browserSecCHUAPlatformVersion = `"19.0.0"`
+	browserSecCHUAArch            = `"x86"`
+	browserSecCHUABitness         = `"64"`
+	browserImpersonationProfile   = "chrome145"
 )
 
 type AccountLookup interface {
@@ -78,10 +89,11 @@ func NewClient(accessToken string, lookup AccountLookup, proxy *service.ProxySer
 		proxy:             proxy,
 	}
 	c.fp = c.buildFingerprint()
+	c.applyBrowserFingerprint()
 	c.userAgent = c.fp["user-agent"]
 	c.deviceID = c.fp["oai-device-id"]
 	c.sessionID = c.fp["oai-session-id"]
-	c.httpClient = proxy.HTTPClient(300 * time.Second)
+	c.httpClient = proxy.BrowserHTTPClientWithProfile(c.fp["impersonate"], 300*time.Second)
 	return c
 }
 
@@ -186,10 +198,8 @@ func (c *Client) ResolveConversationImageURLs(ctx context.Context, conversationI
 
 func (c *Client) DownloadImageBytes(ctx context.Context, urls []string) ([][]byte, error) {
 	var images [][]byte
-	client := c.proxy.HTTPClient(120 * time.Second)
 	for _, item := range urls {
-		req, _ := http.NewRequestWithContext(ctx, http.MethodGet, item, nil)
-		resp, err := client.Do(req)
+		resp, err := c.downloadImageBytesResponse(ctx, item)
 		if err != nil {
 			return nil, err
 		}
@@ -199,11 +209,66 @@ func (c *Client) DownloadImageBytes(ctx context.Context, urls []string) ([][]byt
 			return nil, readErr
 		}
 		if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-			return nil, fmt.Errorf("image_download failed: status=%d, body=%s", resp.StatusCode, string(data))
+			return nil, upstreamHTTPError("image_download", resp.StatusCode, data)
 		}
 		images = append(images, data)
 	}
 	return images, nil
+}
+
+func (c *Client) downloadImageBytesResponse(ctx context.Context, rawURL string) (*http.Response, error) {
+	target := strings.TrimSpace(rawURL)
+	if target == "" {
+		return nil, fmt.Errorf("image url is required")
+	}
+	parsed, err := url.Parse(target)
+	if err != nil {
+		return nil, err
+	}
+	if !parsed.IsAbs() {
+		base, baseErr := url.Parse(c.BaseURL)
+		if baseErr != nil {
+			return nil, baseErr
+		}
+		parsed = base.ResolveReference(parsed)
+		target = parsed.String()
+	}
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, target, nil)
+	if err != nil {
+		return nil, err
+	}
+	if c.isChatGPTBackendURL(parsed) {
+		path := parsed.EscapedPath()
+		for key, value := range c.headers(path, map[string]string{"Accept": "image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8"}) {
+			req.Header.Set(key, value)
+		}
+		return c.httpClient.Do(req)
+	}
+
+	if c.userAgent != "" {
+		req.Header.Set("User-Agent", c.userAgent)
+	}
+	client := c.httpClient
+	if c.proxy != nil {
+		client = c.proxy.HTTPClient(120 * time.Second)
+	}
+	return client.Do(req)
+}
+
+func (c *Client) isChatGPTBackendURL(parsed *url.URL) bool {
+	if parsed == nil {
+		return false
+	}
+	base, err := url.Parse(c.BaseURL)
+	if err != nil || base.Host == "" {
+		return false
+	}
+	if !strings.EqualFold(parsed.Host, base.Host) {
+		return false
+	}
+	path := parsed.EscapedPath()
+	return strings.HasPrefix(path, "/backend-api/") || strings.HasPrefix(path, "/backend-anon/")
 }
 
 func (c *Client) streamPictureConversation(ctx context.Context, out chan<- string, prompt, model string, images []string) error {
@@ -256,13 +321,12 @@ func (c *Client) buildFingerprint() map[string]string {
 		}
 	}
 	defaults := map[string]string{
-		"user-agent":         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/143.0.0.0 Safari/537.36 Edg/143.0.0.0",
-		"impersonate":        "edge101",
+		"user-agent":         browserUserAgent,
+		"impersonate":        browserImpersonationProfile,
 		"oai-device-id":      util.NewUUID(),
 		"oai-session-id":     util.NewUUID(),
-		"sec-ch-ua":          `"Microsoft Edge";v="143", "Chromium";v="143", "Not A(Brand";v="24"`,
-		"sec-ch-ua-mobile":   "?0",
-		"sec-ch-ua-platform": `"Windows"`,
+		"sec-ch-ua-mobile":   browserSecCHUAMobile,
+		"sec-ch-ua-platform": browserSecCHUAPlatform,
 	}
 	for key, value := range defaults {
 		if fp[key] == "" {
@@ -270,6 +334,101 @@ func (c *Client) buildFingerprint() map[string]string {
 		}
 	}
 	return fp
+}
+
+func (c *Client) applyBrowserFingerprint() {
+	if c.fp == nil {
+		c.fp = map[string]string{}
+	}
+	setDefault := func(key, value string) {
+		if strings.TrimSpace(c.fp[key]) == "" {
+			c.fp[key] = value
+		}
+	}
+	setDefault("impersonate", browserImpersonationProfile)
+	setDefault("user-agent", browserUserAgent)
+	setDefault("sec-ch-ua-mobile", browserSecCHUAMobile)
+	setDefault("sec-ch-ua-platform", browserSecCHUAPlatform)
+	metadata := browserMetadataFromUserAgent(c.fp["user-agent"])
+	setDefault("sec-ch-ua", metadata.secCHUA)
+	setDefault("sec-ch-ua-arch", browserSecCHUAArch)
+	setDefault("sec-ch-ua-bitness", browserSecCHUABitness)
+	setDefault("sec-ch-ua-full-version", quoteHeaderValue(metadata.fullVersion))
+	setDefault("sec-ch-ua-full-version-list", metadata.fullVersionList)
+	setDefault("sec-ch-ua-platform-version", browserSecCHUAPlatformVersion)
+}
+
+type browserHeaderMetadata struct {
+	secCHUA         string
+	fullVersion     string
+	fullVersionList string
+}
+
+func browserMetadataFromUserAgent(userAgent string) browserHeaderMetadata {
+	chromeVersion := regexpVersion(userAgent, `Chrome/([0-9]+(?:\.[0-9]+){0,3})`)
+	edgeVersion := regexpVersion(userAgent, `Edg[A-Z]*/([0-9]+(?:\.[0-9]+){0,3})`)
+	if edgeVersion != "" {
+		edgeMajor := majorVersion(edgeVersion)
+		chromiumVersion := firstNonEmpty(chromeVersion, edgeVersion)
+		chromiumMajor := majorVersion(chromiumVersion)
+		return browserHeaderMetadata{
+			secCHUA:         fmt.Sprintf(`"Microsoft Edge";v="%s", "Chromium";v="%s", "Not A(Brand";v="24"`, edgeMajor, chromiumMajor),
+			fullVersion:     edgeVersion,
+			fullVersionList: fmt.Sprintf(`"Microsoft Edge";v="%s", "Chromium";v="%s", "Not A(Brand";v="24.0.0.0"`, normalizeFullVersion(edgeVersion), normalizeFullVersion(chromiumVersion)),
+		}
+	}
+	if chromeVersion != "" {
+		major := majorVersion(chromeVersion)
+		full := normalizeFullVersion(chromeVersion)
+		return browserHeaderMetadata{
+			secCHUA:         fmt.Sprintf(`"Not:A-Brand";v="99", "Google Chrome";v="%s", "Chromium";v="%s"`, major, major),
+			fullVersion:     full,
+			fullVersionList: fmt.Sprintf(`"Not:A-Brand";v="99.0.0.0", "Google Chrome";v="%s", "Chromium";v="%s"`, full, full),
+		}
+	}
+	return browserHeaderMetadata{
+		secCHUA:         browserSecCHUA,
+		fullVersion:     strings.Trim(browserSecCHUAFullVersion, `"`),
+		fullVersionList: browserSecCHUAFullVersionList,
+	}
+}
+
+func regexpVersion(value, pattern string) string {
+	match := regexp.MustCompile(pattern).FindStringSubmatch(value)
+	if len(match) > 1 {
+		return match[1]
+	}
+	return ""
+}
+
+func majorVersion(version string) string {
+	if before, _, ok := strings.Cut(version, "."); ok {
+		return before
+	}
+	return version
+}
+
+func normalizeFullVersion(version string) string {
+	version = strings.TrimSpace(version)
+	if version == "" {
+		return strings.Trim(browserSecCHUAFullVersion, `"`)
+	}
+	parts := strings.Split(version, ".")
+	for len(parts) < 4 {
+		parts = append(parts, "0")
+	}
+	return strings.Join(parts[:4], ".")
+}
+
+func quoteHeaderValue(value string) string {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		value = strings.Trim(browserSecCHUAFullVersion, `"`)
+	}
+	if strings.HasPrefix(value, `"`) && strings.HasSuffix(value, `"`) {
+		return value
+	}
+	return `"` + value + `"`
 }
 
 func (c *Client) headers(path string, extra map[string]string) map[string]string {
@@ -282,14 +441,14 @@ func (c *Client) headers(path string, extra map[string]string) map[string]string
 		"Pragma":                      "no-cache",
 		"Priority":                    "u=1, i",
 		"Sec-Ch-Ua":                   c.fp["sec-ch-ua"],
-		"Sec-Ch-Ua-Arch":              `"x86"`,
-		"Sec-Ch-Ua-Bitness":           `"64"`,
-		"Sec-Ch-Ua-Full-Version":      `"143.0.3650.96"`,
-		"Sec-Ch-Ua-Full-Version-List": `"Microsoft Edge";v="143.0.3650.96", "Chromium";v="143.0.7499.147", "Not A(Brand";v="24.0.0.0"`,
+		"Sec-Ch-Ua-Arch":              c.fp["sec-ch-ua-arch"],
+		"Sec-Ch-Ua-Bitness":           c.fp["sec-ch-ua-bitness"],
+		"Sec-Ch-Ua-Full-Version":      c.fp["sec-ch-ua-full-version"],
+		"Sec-Ch-Ua-Full-Version-List": c.fp["sec-ch-ua-full-version-list"],
 		"Sec-Ch-Ua-Mobile":            c.fp["sec-ch-ua-mobile"],
 		"Sec-Ch-Ua-Model":             `""`,
 		"Sec-Ch-Ua-Platform":          c.fp["sec-ch-ua-platform"],
-		"Sec-Ch-Ua-Platform-Version":  `"19.0.0"`,
+		"Sec-Ch-Ua-Platform-Version":  c.fp["sec-ch-ua-platform-version"],
 		"Sec-Fetch-Dest":              "empty",
 		"Sec-Fetch-Mode":              "cors",
 		"Sec-Fetch-Site":              "same-origin",
@@ -338,7 +497,7 @@ func (c *Client) bootstrap(ctx context.Context) error {
 	defer resp.Body.Close()
 	data, _ := io.ReadAll(resp.Body)
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return fmt.Errorf("bootstrap failed: status=%d, body=%s", resp.StatusCode, string(data))
+		return upstreamHTTPError("bootstrap", resp.StatusCode, data)
 	}
 	c.powSources, c.powDataBuild = parsePOWResources(string(data))
 	if len(c.powSources) == 0 {
@@ -362,7 +521,7 @@ func (c *Client) getChatRequirements(ctx context.Context) (ChatRequirements, err
 	defer resp.Body.Close()
 	data, _ := io.ReadAll(resp.Body)
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return ChatRequirements{}, fmt.Errorf("%s failed: status=%d, body=%s", contextName, resp.StatusCode, string(data))
+		return ChatRequirements{}, upstreamHTTPError(contextName, resp.StatusCode, data)
 	}
 	var payload map[string]any
 	if err := json.Unmarshal(data, &payload); err != nil {
@@ -455,6 +614,12 @@ func (c *Client) imageHeaders(path string, reqs ChatRequirements, conduitToken, 
 	if reqs.ProofToken != "" {
 		extra["OpenAI-Sentinel-Proof-Token"] = reqs.ProofToken
 	}
+	if reqs.TurnstileToken != "" {
+		extra["OpenAI-Sentinel-Turnstile-Token"] = reqs.TurnstileToken
+	}
+	if reqs.SOToken != "" {
+		extra["OpenAI-Sentinel-SO-Token"] = reqs.SOToken
+	}
 	if conduitToken != "" {
 		extra["X-Conduit-Token"] = conduitToken
 	}
@@ -494,7 +659,7 @@ func (c *Client) prepareImageConversation(ctx context.Context, prompt string, re
 	defer resp.Body.Close()
 	data, _ := io.ReadAll(resp.Body)
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return "", fmt.Errorf("%s failed: status=%d, body=%s", path, resp.StatusCode, string(data))
+		return "", upstreamHTTPError(path, resp.StatusCode, data)
 	}
 	var result map[string]any
 	if err := json.Unmarshal(data, &result); err != nil {
@@ -587,7 +752,7 @@ func (c *Client) startImageGeneration(ctx context.Context, prompt string, reqs C
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		defer resp.Body.Close()
 		data, _ := io.ReadAll(resp.Body)
-		return nil, fmt.Errorf("%s failed: status=%d, body=%s", path, resp.StatusCode, string(data))
+		return nil, upstreamHTTPError(path, resp.StatusCode, data)
 	}
 	return resp, nil
 }
@@ -630,7 +795,7 @@ func (c *Client) resolveImageURLs(ctx context.Context, conversationID string, fi
 		if fileID == "file_upload" {
 			continue
 		}
-		if u := c.fileDownloadURL(ctx, fileID); u != "" {
+		if u := c.fileDownloadURL(ctx, conversationID, fileID); u != "" {
 			urls = append(urls, u)
 		}
 	}
@@ -645,7 +810,16 @@ func (c *Client) resolveImageURLs(ctx context.Context, conversationID string, fi
 	return urls
 }
 
-func (c *Client) fileDownloadURL(ctx context.Context, fileID string) string {
+func (c *Client) fileDownloadURL(ctx context.Context, conversationID, fileID string) string {
+	if strings.TrimSpace(conversationID) != "" {
+		query := url.Values{}
+		query.Set("conversation_id", conversationID)
+		query.Set("inline", "false")
+		path := "/backend-api/files/download/" + url.PathEscape(fileID) + "?" + query.Encode()
+		if resolved := c.downloadURL(ctx, path); resolved != "" {
+			return resolved
+		}
+	}
 	path := "/backend-api/files/" + url.PathEscape(fileID) + "/download"
 	return c.downloadURL(ctx, path)
 }
@@ -657,7 +831,11 @@ func (c *Client) attachmentDownloadURL(ctx context.Context, conversationID, atta
 
 func (c *Client) downloadURL(ctx context.Context, path string) string {
 	req, _ := http.NewRequestWithContext(ctx, http.MethodGet, c.BaseURL+path, nil)
-	for key, value := range c.headers(path, map[string]string{"Accept": "application/json"}) {
+	targetPath := path
+	if index := strings.IndexByte(targetPath, '?'); index >= 0 {
+		targetPath = targetPath[:index]
+	}
+	for key, value := range c.headers(targetPath, map[string]string{"Accept": "application/json"}) {
 		req.Header.Set(key, value)
 	}
 	resp, err := c.httpClient.Do(req)
@@ -692,7 +870,7 @@ func ensureOK(resp *http.Response, context string) error {
 		return nil
 	}
 	data, _ := io.ReadAll(resp.Body)
-	return fmt.Errorf("%s failed: status=%d, body=%s", context, resp.StatusCode, string(data))
+	return upstreamHTTPError(context, resp.StatusCode, data)
 }
 
 func ensureOKAndClose(resp *http.Response, context string) error {
@@ -704,13 +882,53 @@ func readJSONResponse(resp *http.Response, context string) (map[string]any, erro
 	defer resp.Body.Close()
 	data, _ := io.ReadAll(resp.Body)
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return nil, fmt.Errorf("%s failed: status=%d, body=%s", context, resp.StatusCode, string(data))
+		return nil, upstreamHTTPError(context, resp.StatusCode, data)
 	}
 	var payload map[string]any
 	if err := json.Unmarshal(data, &payload); err != nil {
 		return nil, err
 	}
 	return payload, nil
+}
+
+func upstreamHTTPError(context string, status int, body []byte) error {
+	detail := summarizeUpstreamErrorBody(body)
+	if detail == "" {
+		return fmt.Errorf("%s failed: status=%d", context, status)
+	}
+	return fmt.Errorf("%s failed: status=%d, %s", context, status, detail)
+}
+
+func summarizeUpstreamErrorBody(body []byte) string {
+	text := strings.TrimSpace(string(body))
+	if text == "" {
+		return ""
+	}
+	lower := strings.ToLower(text)
+	if isCloudflareChallengeBody(lower) {
+		return "upstream returned Cloudflare challenge page; refresh browser fingerprint/session or change proxy"
+	}
+	if looksLikeHTMLBody(lower) {
+		return "upstream returned HTML error page"
+	}
+	const maxBodyDetail = 2048
+	if len(text) > maxBodyDetail {
+		return "body=" + text[:maxBodyDetail] + "...(truncated)"
+	}
+	return "body=" + text
+}
+
+func isCloudflareChallengeBody(lower string) bool {
+	return strings.Contains(lower, "cf_chl") ||
+		strings.Contains(lower, "challenge-platform") ||
+		strings.Contains(lower, "enable javascript and cookies to continue") ||
+		strings.Contains(lower, "cloudflare")
+}
+
+func looksLikeHTMLBody(lower string) bool {
+	return strings.Contains(lower, "<html") ||
+		strings.Contains(lower, "<!doctype html") ||
+		strings.Contains(lower, "<body")
 }
 
 func iterSSEPayloads(ctx context.Context, reader io.Reader, out chan<- string) error {
@@ -805,10 +1023,6 @@ func extractImageToolRecords(data map[string]any) ([]string, []string) {
 		sediments = appendUnique(sediments, rec.sediments...)
 	}
 	return files, sediments
-}
-
-func solveTurnstileToken(dx, p string) string {
-	return ""
 }
 
 func anySlice(value any) []any {

@@ -232,7 +232,9 @@ func (b *DatabaseBackend) saveRows(table, keyColumn string, items []map[string]a
 	if err != nil {
 		return err
 	}
-	defer tx.Rollback()
+	defer func() {
+		_ = tx.Rollback()
+	}()
 	if _, err := tx.Exec("DELETE FROM " + table); err != nil {
 		return err
 	}

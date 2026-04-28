@@ -64,3 +64,19 @@ func TestToolCallParsing(t *testing.T) {
 		t.Fatalf("StripToolMarkup() = %q", stripped)
 	}
 }
+
+func TestStreamImageResponseErrorsWhenNoImageOutput(t *testing.T) {
+	outputs := make(chan ImageOutput)
+	close(outputs)
+	events, errCh := StreamImageResponse(outputs, "draw", "gpt-image-2")
+	var count int
+	for range events {
+		count++
+	}
+	if count != 1 {
+		t.Fatalf("event count = %d, want response.created only", count)
+	}
+	if err := <-errCh; err == nil || err.Error() != "image generation failed" {
+		t.Fatalf("err = %v", err)
+	}
+}
