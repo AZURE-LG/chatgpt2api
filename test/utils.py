@@ -1,5 +1,6 @@
 import base64
 import json
+import os
 import sys
 import time
 import urllib.request
@@ -15,7 +16,16 @@ if str(ROOT_DIR) not in sys.path:
 
 
 def load_auth_key() -> str:
-    return json.loads((ROOT_DIR / "config.json").read_text(encoding="utf-8"))["auth-key"]
+    env_auth_key = os.getenv("CHATGPT2API_AUTH_KEY")
+    if env_auth_key:
+        return env_auth_key
+    env_file = ROOT_DIR / ".env"
+    if env_file.exists() and env_file.is_file():
+        for line in env_file.read_text(encoding="utf-8").splitlines():
+            key, separator, value = line.strip().partition("=")
+            if separator and key == "CHATGPT2API_AUTH_KEY":
+                return value.strip().strip('"').strip("'")
+    return "chatgpt2api"
 
 
 def post_json(path: str, payload: dict) -> dict:

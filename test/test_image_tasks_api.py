@@ -1,7 +1,10 @@
 from __future__ import annotations
 
 import unittest
+import os
 from unittest import mock
+
+os.environ.setdefault("CHATGPT2API_AUTH_KEY", "chatgpt2api")
 
 from fastapi import FastAPI
 from fastapi.testclient import TestClient

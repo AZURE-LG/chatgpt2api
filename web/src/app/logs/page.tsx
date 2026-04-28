@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { ChevronLeft, ChevronRight, LoaderCircle, RefreshCw, Search } from "lucide-react";
 import { toast } from "sonner";
 
@@ -49,7 +49,7 @@ function getStatus(item: SystemLog) {
 
 function LogsContent() {
   const [items, setItems] = useState<SystemLog[]>([]);
-  const [type, setType] = useState(LogType.Call);
+  const [type, setType] = useState<string>(LogType.Call);
   const [startDate, setStartDate] = useState("");
   const [endDate, setEndDate] = useState("");
   const [detailLog, setDetailLog] = useState<SystemLog | null>(null);
@@ -66,7 +66,7 @@ function LogsContent() {
   const safePage = Math.min(page, pageCount);
   const currentRows = items.slice((safePage - 1) * pageSize, safePage * pageSize);
 
-  const loadLogs = async () => {
+  const loadLogs = useCallback(async () => {
     setIsLoading(true);
     try {
       const data = await fetchSystemLogs({ type, start_date: startDate, end_date: endDate });
@@ -75,9 +75,9 @@ function LogsContent() {
     } catch (error) {
       toast.error(error instanceof Error ? error.message : "加载日志失败");
     } finally {
-    setIsLoading(false);
+      setIsLoading(false);
     }
-  };
+  }, [endDate, startDate, type]);
 
   const clearFilters = () => {
     setStartDate("");
@@ -91,7 +91,7 @@ function LogsContent() {
 
   useEffect(() => {
     void loadLogs();
-  }, [type, startDate, endDate]);
+  }, [loadLogs]);
 
   return (
     <section className="space-y-5">

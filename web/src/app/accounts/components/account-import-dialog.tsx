@@ -1,7 +1,7 @@
 "use client";
 
-import { useRouter } from "next/navigation";
 import { useRef, useState, type ChangeEvent } from "react";
+import { useNavigate } from "react-router-dom";
 import {
   ArrowLeft,
   ExternalLink,
@@ -103,7 +103,7 @@ function MethodCard({
 }
 
 export function AccountImportDialog({ disabled, onImported }: AccountImportDialogProps) {
-  const router = useRouter();
+  const navigate = useNavigate();
   const [open, setOpen] = useState(false);
   const [method, setMethod] = useState<ImportMethod>("menu");
   const [tokenInput, setTokenInput] = useState("");
@@ -430,7 +430,7 @@ export function AccountImportDialog({ disabled, onImported }: AccountImportDialo
           onClick={() => {
             setOpen(false);
             resetState();
-            router.push("/settings");
+            navigate("/settings");
           }}
         />
         <MethodCard
@@ -440,7 +440,7 @@ export function AccountImportDialog({ disabled, onImported }: AccountImportDialo
           onClick={() => {
             setOpen(false);
             resetState();
-            router.push("/settings");
+            navigate("/settings");
           }}
         />
       </div>

@@ -26,14 +26,14 @@
 
 ```bash
 git clone git@github.com:basketikun/chatgpt2api.git
-# 按需编辑 config.json 的密钥和 `refresh_account_interval_minute`
-# 也可以直接通过环境变量 CHATGPT2API_AUTH_KEY 覆盖 auth-key
+cp .env.example .env
+# 按需编辑 .env，至少设置 CHATGPT2API_AUTH_KEY
 docker compose up -d
 ```
 
 ### 存储后端配置
 
-支持通过环境变量 `STORAGE_BACKEND` 切换存储方式：
+运行时配置统一写在 `.env` 中；容器部署时也可以用平台环境变量覆盖 `.env` 中的同名值。支持通过环境变量 `STORAGE_BACKEND` 切换存储方式：
 
 - `json` - 本地 JSON 文件（默认）
 - `sqlite` - 本地 SQLite 数据库

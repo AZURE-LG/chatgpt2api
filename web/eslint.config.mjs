@@ -1,10 +1,33 @@
-import nextCoreWebVitals from 'eslint-config-next/core-web-vitals';
-import nextTypescript from 'eslint-config-next/typescript';
+import js from '@eslint/js';
+import reactHooks from 'eslint-plugin-react-hooks';
+import reactRefresh from 'eslint-plugin-react-refresh';
+import globals from 'globals';
 import prettier from 'eslint-config-prettier/flat';
+import tseslint from 'typescript-eslint';
 
 const eslintConfig = [
-    ...nextCoreWebVitals,
-    ...nextTypescript,
+    { ignores: ['**/.next/**', '**/dist/**', '**/node_modules/**', '**/out/**'] },
+    js.configs.recommended,
+    ...tseslint.configs.recommended,
+    {
+        files: ['**/*.{ts,tsx}'],
+        languageOptions: {
+            ecmaVersion: 2020,
+            globals: globals.browser,
+        },
+        plugins: {
+            'react-hooks': reactHooks,
+            'react-refresh': reactRefresh,
+        },
+        rules: {
+            'react-hooks/rules-of-hooks': 'error',
+            'react-hooks/exhaustive-deps': 'warn',
+            'react-refresh/only-export-components': [
+                'warn',
+                { allowConstantExport: true, allowExportNames: ['badgeVariants', 'buttonVariants'] },
+            ],
+        },
+    },
     prettier,
     {
         rules: {

@@ -42,13 +42,15 @@ def create_app() -> FastAPI:
     app.include_router(system.create_router(app_version))
     if config.images_dir.exists():
         app.mount("/images", StaticFiles(directory=str(config.images_dir)), name="images")
+    app.mount("/image-thumbnails", StaticFiles(directory=str(config.image_thumbnails_dir)), name="image-thumbnails")
 
     @app.get("/{full_path:path}", include_in_schema=False)
     async def serve_web(full_path: str):
         asset = resolve_web_asset(full_path)
         if asset is not None:
             return FileResponse(asset)
-        if full_path.strip("/").startswith("_next/"):
+        clean_path = full_path.strip("/")
+        if clean_path.startswith("assets/") or "." in clean_path.rsplit("/", 1)[-1]:
             raise HTTPException(status_code=404, detail="Not Found")
         fallback = resolve_web_asset("")
         if fallback is None:

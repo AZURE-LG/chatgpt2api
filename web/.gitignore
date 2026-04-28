@@ -13,7 +13,8 @@
 # testing
 /coverage
 
-# next.js
+# build output
+/dist/
 /.next/
 /out/
 

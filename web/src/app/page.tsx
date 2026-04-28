@@ -1,12 +1,12 @@
 "use client";
 
 import { useEffect } from "react";
-import { useRouter } from "next/navigation";
+import { useNavigate } from "react-router-dom";
 
 import { getDefaultRouteForRole, getStoredAuthSession } from "@/store/auth";
 
 export default function HomePage() {
-  const router = useRouter();
+  const navigate = useNavigate();
 
   useEffect(() => {
     let active = true;
@@ -16,14 +16,14 @@ export default function HomePage() {
       if (!active) {
         return;
       }
-      router.replace(session ? getDefaultRouteForRole(session.role) : "/login");
+      navigate(session ? getDefaultRouteForRole(session.role) : "/login", { replace: true });
     };
 
     void redirect();
     return () => {
       active = false;
     };
-  }, [router]);
+  }, [navigate]);
 
   return null;
 }

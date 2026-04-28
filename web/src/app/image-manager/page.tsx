@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { CalendarDays, ChevronLeft, ChevronRight, Copy, ImageIcon, LoaderCircle, Maximize2, RefreshCw, Search } from "lucide-react";
 import { toast } from "sonner";
 
@@ -22,20 +22,19 @@ function ImageManagerContent() {
   const [lightboxIndex, setLightboxIndex] = useState(0);
   const [lightboxOpen, setLightboxOpen] = useState(false);
   const [page, setPage] = useState(1);
-  const [dimensions, setDimensions] = useState<Record<string, string>>({});
   const [isLoading, setIsLoading] = useState(true);
   const lightboxImages = items.map((item) => ({
     id: item.name,
     src: item.url,
     sizeLabel: formatSize(item.size),
-    dimensions: dimensions[item.url],
+    dimensions: item.width && item.height ? `${item.width} x ${item.height}` : undefined,
   }));
   const pageSize = 12;
   const pageCount = Math.max(1, Math.ceil(items.length / pageSize));
   const safePage = Math.min(page, pageCount);
   const currentRows = items.slice((safePage - 1) * pageSize, safePage * pageSize);
 
-  const loadImages = async () => {
+  const loadImages = useCallback(async () => {
     setIsLoading(true);
     try {
       const data = await fetchManagedImages({ start_date: startDate, end_date: endDate });
@@ -46,7 +45,7 @@ function ImageManagerContent() {
     } finally {
       setIsLoading(false);
     }
-  };
+  }, [endDate, startDate]);
 
   const clearFilters = () => {
     setStartDate("");
@@ -55,7 +54,7 @@ function ImageManagerContent() {
 
   useEffect(() => {
     void loadImages();
-  }, [startDate, endDate]);
+  }, [loadImages]);
 
   return (
     <section className="space-y-5">
@@ -102,16 +101,12 @@ function ImageManagerContent() {
                   }}
                 >
                   <img
-                    src={item.url}
+                    src={item.thumbnail_url || item.url}
                     alt={item.name}
+                    loading="lazy"
+                    decoding="async"
+                    sizes="(min-width: 1280px) 25vw, (min-width: 1024px) 33vw, (min-width: 640px) 50vw, 100vw"
                     className="h-full w-full object-cover transition group-hover:scale-[1.02]"
-                    onLoad={(event) => {
-                      const image = event.currentTarget;
-                      setDimensions((current) => ({
-                        ...current,
-                        [item.url]: `${image.naturalWidth} x ${image.naturalHeight}`,
-                      }));
-                    }}
                   />
                   <span className="absolute right-2 bottom-2 rounded-full bg-black/50 p-2 text-white opacity-0 transition group-hover:opacity-100">
                     <Maximize2 className="size-4" />
@@ -137,7 +132,7 @@ function ImageManagerContent() {
                   </div>
                   <div className="flex items-center justify-between gap-2">
                     <span>{formatSize(item.size)}</span>
-                    <span>{dimensions[item.url] || "-"}</span>
+                    <span>{item.width && item.height ? `${item.width} x ${item.height}` : "-"}</span>
                   </div>
                 </div>
               </div>

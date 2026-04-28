@@ -66,6 +66,9 @@ export type ManagedImage = {
   date: string;
   size: number;
   url: string;
+  thumbnail_url?: string;
+  width?: number;
+  height?: number;
   created_at: string;
 };
 

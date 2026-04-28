@@ -679,7 +679,6 @@ function ImagePageContent({ isAdmin }: { isAdmin: boolean }) {
     setLightboxOpen(true);
   }, []);
 
-  /* eslint-disable react-hooks/preserve-manual-memoization */
   const runConversationQueue = useCallback(
     async (conversationId: string) => {
       if (activeConversationQueueIds.has(conversationId)) {
@@ -838,8 +837,6 @@ function ImagePageContent({ isAdmin }: { isAdmin: boolean }) {
     },
     [loadQuota, updateConversation],
   );
-  /* eslint-enable react-hooks/preserve-manual-memoization */
-
   useEffect(() => {
     for (const conversation of conversations) {
       if (
