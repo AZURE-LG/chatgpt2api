@@ -911,12 +911,8 @@ func (a *App) recordImageOwners(identity service.Identity, urls []string) {
 	if len(urls) == 0 || a.images == nil {
 		return
 	}
-	a.images.EnsureThumbnails(urls)
 	ownerID := identityScope(identity)
-	if ownerID == "" || ownerID == "anonymous" {
-		return
-	}
-	a.images.RecordImageOwners(urls, ownerID)
+	a.images.RecordGeneratedImages(urls, ownerID)
 }
 
 func (a *App) runLoggedImageTask(ctx context.Context, identity service.Identity, payload map[string]any, endpoint, summary string, run func(context.Context, map[string]any) (map[string]any, error)) (map[string]any, error) {

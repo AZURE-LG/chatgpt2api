@@ -8,7 +8,9 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 
 	"github.com/HugoSmits86/nativewebp"
 )
@@ -99,8 +101,8 @@ func TestImageServiceEnsureThumbnailCreatesWebPThumbnails(t *testing.T) {
 	}
 
 	service := NewImageService(config)
-	thumb := service.ensureThumbnail(imagePath, "2026/04/29/sample.png")
-	thumbnailRel := toString(thumb["thumbnail_rel"])
+	service.EnsureThumbnails([]string{"2026/04/29/sample.png"})
+	thumbnailRel := "2026/04/29/sample.png.webp"
 	if !strings.HasSuffix(thumbnailRel, ".webp") {
 		t.Fatalf("thumbnail_rel = %q, want .webp suffix", thumbnailRel)
 	}
@@ -166,6 +168,129 @@ func TestImageServiceEnsureThumbnailsCreatesCachedThumbnailFromImageURL(t *testi
 	}
 }
 
+func TestImageServiceEnsureThumbnailsReusesFreshThumbnail(t *testing.T) {
+	root := t.TempDir()
+	config := testImageConfig{root: root}
+	imagePath := filepath.Join(config.ImagesDir(), "2026", "04", "29", "sample.png")
+	if err := os.MkdirAll(filepath.Dir(imagePath), 0o755); err != nil {
+		t.Fatalf("MkdirAll() error = %v", err)
+	}
+	if err := writeTestPNG(imagePath); err != nil {
+		t.Fatalf("writeTestPNG() error = %v", err)
+	}
+
+	service := NewImageService(config)
+	service.EnsureThumbnails([]string{"2026/04/29/sample.png"})
+	thumbPath := filepath.Join(config.ImageThumbnailsDir(), "2026", "04", "29", "sample.png.webp")
+	firstInfo, err := os.Stat(thumbPath)
+	if err != nil {
+		t.Fatalf("stat thumbnail: %v", err)
+	}
+
+	service.EnsureThumbnails([]string{"2026/04/29/sample.png"})
+	secondInfo, err := os.Stat(thumbPath)
+	if err != nil {
+		t.Fatalf("stat thumbnail after reuse: %v", err)
+	}
+	if !secondInfo.ModTime().Equal(firstInfo.ModTime()) {
+		t.Fatalf("fresh thumbnail was regenerated: first=%s second=%s", firstInfo.ModTime(), secondInfo.ModTime())
+	}
+}
+
+func TestImageServiceEnsureThumbnailsRegeneratesStaleThumbnail(t *testing.T) {
+	root := t.TempDir()
+	config := testImageConfig{root: root}
+	imagePath := filepath.Join(config.ImagesDir(), "2026", "04", "29", "sample.png")
+	if err := os.MkdirAll(filepath.Dir(imagePath), 0o755); err != nil {
+		t.Fatalf("MkdirAll() error = %v", err)
+	}
+	if err := writeTestPNG(imagePath); err != nil {
+		t.Fatalf("writeTestPNG() error = %v", err)
+	}
+
+	service := NewImageService(config)
+	service.EnsureThumbnails([]string{"2026/04/29/sample.png"})
+	thumbPath := filepath.Join(config.ImageThumbnailsDir(), "2026", "04", "29", "sample.png.webp")
+	staleTime := time.Now().Add(-time.Hour).Truncate(time.Second)
+	if err := os.Chtimes(thumbPath, staleTime, staleTime); err != nil {
+		t.Fatalf("Chtimes() error = %v", err)
+	}
+
+	service.EnsureThumbnails([]string{"2026/04/29/sample.png"})
+	info, err := os.Stat(thumbPath)
+	if err != nil {
+		t.Fatalf("stat regenerated thumbnail: %v", err)
+	}
+	if !info.ModTime().After(staleTime) {
+		t.Fatalf("stale thumbnail was not regenerated: got %s, stale %s", info.ModTime(), staleTime)
+	}
+}
+
+func TestImageServiceEnsureThumbnailsRefreshesInvalidMetadata(t *testing.T) {
+	root := t.TempDir()
+	config := testImageConfig{root: root}
+	imagePath := filepath.Join(config.ImagesDir(), "2026", "04", "29", "sample.png")
+	if err := os.MkdirAll(filepath.Dir(imagePath), 0o755); err != nil {
+		t.Fatalf("MkdirAll() error = %v", err)
+	}
+	if err := writeTestPNG(imagePath); err != nil {
+		t.Fatalf("writeTestPNG() error = %v", err)
+	}
+
+	service := NewImageService(config)
+	service.EnsureThumbnails([]string{"2026/04/29/sample.png"})
+	thumbPath := filepath.Join(config.ImageThumbnailsDir(), "2026", "04", "29", "sample.png.webp")
+	if err := os.WriteFile(thumbPath+".json", []byte(`{"width":1,"height":1,"thumbnail_size":1,"thumbnail_version":0}`), 0o644); err != nil {
+		t.Fatalf("write stale metadata: %v", err)
+	}
+
+	service.EnsureThumbnails([]string{"2026/04/29/sample.png"})
+	meta, err := os.ReadFile(thumbPath + ".json")
+	if err != nil {
+		t.Fatalf("read thumbnail metadata: %v", err)
+	}
+	var metadata map[string]any
+	if err := json.Unmarshal(meta, &metadata); err != nil {
+		t.Fatalf("unmarshal metadata: %v", err)
+	}
+	if numericMetaValue(metadata["thumbnail_size"]) != ThumbnailSize || numericMetaValue(metadata["thumbnail_version"]) != thumbnailCacheVersion {
+		t.Fatalf("metadata was not refreshed: %#v", metadata)
+	}
+}
+
+func TestImageServiceEnsureThumbnailsHandlesConcurrentSameImage(t *testing.T) {
+	root := t.TempDir()
+	config := testImageConfig{root: root}
+	imagePath := filepath.Join(config.ImagesDir(), "2026", "04", "29", "sample.png")
+	if err := os.MkdirAll(filepath.Dir(imagePath), 0o755); err != nil {
+		t.Fatalf("MkdirAll() error = %v", err)
+	}
+	if err := writeTestPNG(imagePath); err != nil {
+		t.Fatalf("writeTestPNG() error = %v", err)
+	}
+
+	service := NewImageService(config)
+	var wg sync.WaitGroup
+	for i := 0; i < 8; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			service.EnsureThumbnails([]string{"2026/04/29/sample.png"})
+		}()
+	}
+	wg.Wait()
+
+	thumbPath := filepath.Join(config.ImageThumbnailsDir(), "2026", "04", "29", "sample.png.webp")
+	file, err := os.Open(thumbPath)
+	if err != nil {
+		t.Fatalf("open thumbnail: %v", err)
+	}
+	defer file.Close()
+	if _, err := nativewebp.Decode(file); err != nil {
+		t.Fatalf("decode concurrent thumbnail: %v", err)
+	}
+}
+
 func TestImageServiceDeleteImagesRemovesOriginalAndThumbnail(t *testing.T) {
 	root := t.TempDir()
 	config := testImageConfig{root: root}
@@ -178,7 +303,7 @@ func TestImageServiceDeleteImagesRemovesOriginalAndThumbnail(t *testing.T) {
 	}
 
 	service := NewImageService(config)
-	service.ensureThumbnail(imagePath, "2026/04/29/sample.png")
+	service.EnsureThumbnails([]string{"2026/04/29/sample.png"})
 	thumbPath := filepath.Join(config.ImageThumbnailsDir(), "2026", "04", "29", "sample.png.webp")
 	if _, err := os.Stat(thumbPath); err != nil {
 		t.Fatalf("thumbnail was not created: %v", err)

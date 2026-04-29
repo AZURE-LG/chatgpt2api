@@ -15,6 +15,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"chatgpt2api/internal/storage"
@@ -41,8 +42,21 @@ type ImageAccessScope struct {
 }
 
 type ImageService struct {
-	config ImageConfig
-	store  storage.JSONDocumentBackend
+	config        ImageConfig
+	store         storage.JSONDocumentBackend
+	thumbnailMu   sync.Mutex
+	thumbnailJobs map[string]*thumbnailJob
+}
+
+type imageFileRef struct {
+	rel  string
+	path string
+	info os.FileInfo
+}
+
+type thumbnailJob struct {
+	done   chan struct{}
+	result map[string]any
 }
 
 func NewImageService(config ImageConfig, backend ...storage.Backend) *ImageService {
@@ -81,7 +95,7 @@ func (s *ImageService) ListImages(baseURL, startDate, endDate string, scope Imag
 		if !scope.All && (scope.OwnerID == "" || ownerID != scope.OwnerID) {
 			return nil
 		}
-		thumb := s.thumbnailInfo(path, rel)
+		thumb := s.thumbnailInfo(rel, info)
 		item := map[string]any{
 			"name":       filepath.Base(path),
 			"path":       rel,
@@ -191,49 +205,24 @@ func (s *ImageService) RecordImageOwners(values []string, ownerID string) {
 	if ownerID == "" {
 		return
 	}
-	imageRoot, err := filepath.Abs(s.config.ImagesDir())
-	if err != nil {
-		return
+	for _, ref := range s.imageFileRefs(values) {
+		_ = s.writeImageOwner(ref.rel, ownerID)
 	}
-	for _, value := range values {
-		rel, err := imageRelativePathFromValue(value)
-		if err != nil {
-			continue
+}
+
+func (s *ImageService) RecordGeneratedImages(values []string, ownerID string) {
+	ownerID = strings.TrimSpace(ownerID)
+	for _, ref := range s.imageFileRefs(values) {
+		s.ensureThumbnailForRef(ref)
+		if ownerID != "" && ownerID != "anonymous" {
+			_ = s.writeImageOwner(ref.rel, ownerID)
 		}
-		imagePath := filepath.Join(imageRoot, filepath.FromSlash(rel))
-		if !pathInsideRoot(imageRoot, imagePath) {
-			continue
-		}
-		info, err := os.Stat(imagePath)
-		if err != nil || info.IsDir() {
-			continue
-		}
-		_ = s.writeImageOwner(rel, ownerID)
 	}
 }
 
 func (s *ImageService) EnsureThumbnails(values []string) {
-	if len(values) == 0 {
-		return
-	}
-	imageRoot, err := filepath.Abs(s.config.ImagesDir())
-	if err != nil {
-		return
-	}
-	for _, value := range values {
-		rel, err := imageRelativePathFromValue(value)
-		if err != nil {
-			continue
-		}
-		imagePath := filepath.Join(imageRoot, filepath.FromSlash(rel))
-		if !pathInsideRoot(imageRoot, imagePath) {
-			continue
-		}
-		info, err := os.Stat(imagePath)
-		if err != nil || info.IsDir() {
-			continue
-		}
-		s.ensureThumbnail(imagePath, rel)
+	for _, ref := range s.imageFileRefs(values) {
+		s.ensureThumbnailForRef(ref)
 	}
 }
 
@@ -250,61 +239,79 @@ func (s *ImageService) EnsureThumbnail(thumbnailRel string) error {
 	if err != nil {
 		return err
 	}
-	sourcePath := filepath.Join(imageRoot, filepath.FromSlash(sourceRel))
-	if !pathInsideRoot(imageRoot, sourcePath) {
-		return errors.New("invalid image path")
-	}
-	info, err := os.Stat(sourcePath)
+	ref, err := s.imageFileRef(imageRoot, sourceRel)
 	if err != nil {
 		return err
 	}
-	if info.IsDir() {
-		return errors.New("image path is not a file")
-	}
-	thumb := s.ensureThumbnail(sourcePath, sourceRel)
+	thumb := s.ensureThumbnailForRef(ref)
 	if toString(thumb["thumbnail_rel"]) == "" {
 		return errors.New("thumbnail unavailable")
 	}
 	return nil
 }
 
-func (s *ImageService) thumbnailInfo(sourcePath, rel string) map[string]any {
-	thumbPath := s.thumbnailPath(rel)
-	thumbRel := thumbnailRelativePath(s.config.ImageThumbnailsDir(), thumbPath)
-	result := map[string]any{"thumbnail_rel": thumbRel}
-	sourceInfo, err := os.Stat(sourcePath)
-	if err != nil {
-		return result
-	}
-	if thumbInfo, err := os.Stat(thumbPath); err == nil && !thumbInfo.ModTime().Before(sourceInfo.ModTime()) {
-		meta := s.readThumbnailMetadata(rel, thumbPath+".json", sourceInfo.ModTime())
-		if isCurrentThumbnailMetadata(meta) {
-			for key, value := range meta {
-				result[key] = value
-			}
-		}
-	}
+func (s *ImageService) thumbnailInfo(rel string, sourceInfo os.FileInfo) map[string]any {
+	_, result, _ := s.thumbnailCacheInfo(rel, sourceInfo.ModTime())
 	return result
 }
 
-func (s *ImageService) ensureThumbnail(sourcePath, rel string) map[string]any {
-	thumbPath := s.thumbnailPath(rel)
-	metaPath := thumbPath + ".json"
-	sourceInfo, err := os.Stat(sourcePath)
-	if err != nil {
-		return map[string]any{}
+func (s *ImageService) ensureThumbnailForRef(ref imageFileRef) map[string]any {
+	if _, result, ok := s.thumbnailCacheInfo(ref.rel, ref.info.ModTime()); ok {
+		return result
 	}
-	if thumbInfo, err := os.Stat(thumbPath); err == nil && !thumbInfo.ModTime().Before(sourceInfo.ModTime()) {
-		meta := s.readThumbnailMetadata(rel, metaPath, sourceInfo.ModTime())
-		if isCurrentThumbnailMetadata(meta) {
-			result := map[string]any{"thumbnail_rel": thumbnailRelativePath(s.config.ImageThumbnailsDir(), thumbPath)}
-			for key, value := range meta {
-				result[key] = value
-			}
+	return s.withThumbnailJob(ref.rel, func() map[string]any {
+		if _, result, ok := s.thumbnailCacheInfo(ref.rel, ref.info.ModTime()); ok {
 			return result
 		}
+		return s.generateThumbnail(ref)
+	})
+}
+
+func (s *ImageService) withThumbnailJob(rel string, run func() map[string]any) map[string]any {
+	s.thumbnailMu.Lock()
+	if s.thumbnailJobs == nil {
+		s.thumbnailJobs = make(map[string]*thumbnailJob)
 	}
-	file, err := os.Open(sourcePath)
+	if job, ok := s.thumbnailJobs[rel]; ok {
+		done := job.done
+		s.thumbnailMu.Unlock()
+		<-done
+		return job.result
+	}
+	job := &thumbnailJob{done: make(chan struct{})}
+	s.thumbnailJobs[rel] = job
+	s.thumbnailMu.Unlock()
+
+	job.result = run()
+
+	s.thumbnailMu.Lock()
+	delete(s.thumbnailJobs, rel)
+	close(job.done)
+	s.thumbnailMu.Unlock()
+	return job.result
+}
+
+func (s *ImageService) thumbnailCacheInfo(rel string, sourceModTime time.Time) (string, map[string]any, bool) {
+	thumbPath := s.thumbnailPath(rel)
+	thumbRel := thumbnailRelativePath(s.config.ImageThumbnailsDir(), thumbPath)
+	result := map[string]any{"thumbnail_rel": thumbRel}
+	thumbInfo, err := os.Stat(thumbPath)
+	if err != nil || thumbInfo.ModTime().Before(sourceModTime) {
+		return thumbPath, result, false
+	}
+	meta := s.readThumbnailMetadata(rel, thumbPath+".json", sourceModTime)
+	if !isCurrentThumbnailMetadata(meta) {
+		return thumbPath, result, false
+	}
+	for key, value := range meta {
+		result[key] = value
+	}
+	return thumbPath, result, true
+}
+
+func (s *ImageService) generateThumbnail(ref imageFileRef) map[string]any {
+	thumbPath, result, _ := s.thumbnailCacheInfo(ref.rel, ref.info.ModTime())
+	file, err := os.Open(ref.path)
 	if err != nil {
 		return map[string]any{}
 	}
@@ -316,26 +323,65 @@ func (s *ImageService) ensureThumbnail(sourcePath, rel string) map[string]any {
 	bounds := img.Bounds()
 	width, height := bounds.Dx(), bounds.Dy()
 	thumb := resizeToFit(flattenImage(img), ThumbnailSize, ThumbnailSize)
-	if err := os.MkdirAll(filepath.Dir(thumbPath), 0o755); err != nil {
+	if err := writeWebPThumbnail(thumbPath, thumb); err != nil {
 		return map[string]any{}
 	}
-	out, err := os.Create(thumbPath)
-	if err != nil {
-		return map[string]any{}
-	}
-	encodeErr := nativewebp.Encode(out, thumb, nil)
-	closeErr := out.Close()
-	if encodeErr != nil || closeErr != nil {
-		_ = os.Remove(thumbPath)
-		return map[string]any{}
-	}
-	_ = s.writeThumbnailMetadata(rel, metaPath, map[string]any{
+	_ = s.writeThumbnailMetadata(ref.rel, thumbPath+".json", map[string]any{
 		"width":             width,
 		"height":            height,
 		"thumbnail_size":    ThumbnailSize,
 		"thumbnail_version": thumbnailCacheVersion,
 	})
-	return map[string]any{"thumbnail_rel": thumbnailRelativePath(s.config.ImageThumbnailsDir(), thumbPath), "width": width, "height": height}
+	result["width"] = width
+	result["height"] = height
+	return result
+}
+
+func (s *ImageService) imageFileRefs(values []string) []imageFileRef {
+	if len(values) == 0 {
+		return nil
+	}
+	imageRoot, err := filepath.Abs(s.config.ImagesDir())
+	if err != nil {
+		return nil
+	}
+	seen := make(map[string]struct{}, len(values))
+	refs := make([]imageFileRef, 0, len(values))
+	for _, value := range values {
+		rel, err := imageRelativePathFromValue(value)
+		if err != nil {
+			continue
+		}
+		if _, ok := seen[rel]; ok {
+			continue
+		}
+		seen[rel] = struct{}{}
+		ref, err := s.imageFileRef(imageRoot, rel)
+		if err != nil {
+			continue
+		}
+		refs = append(refs, ref)
+	}
+	return refs
+}
+
+func (s *ImageService) imageFileRef(imageRoot, rel string) (imageFileRef, error) {
+	rel, err := cleanImageRelativePath(rel)
+	if err != nil {
+		return imageFileRef{}, err
+	}
+	imagePath := filepath.Join(imageRoot, filepath.FromSlash(rel))
+	if !pathInsideRoot(imageRoot, imagePath) {
+		return imageFileRef{}, errors.New("invalid image path")
+	}
+	info, err := os.Stat(imagePath)
+	if err != nil {
+		return imageFileRef{}, err
+	}
+	if info.IsDir() {
+		return imageFileRef{}, errors.New("image path is not a file")
+	}
+	return imageFileRef{rel: rel, path: imagePath, info: info}, nil
 }
 
 func (s *ImageService) thumbnailPath(rel string) string {
@@ -535,6 +581,38 @@ func removeImageThumbnail(root, rel string) error {
 		return metaErr
 	}
 	removeEmptyParentDirs(root, filepath.Dir(thumbPath))
+	return nil
+}
+
+func writeWebPThumbnail(path string, img image.Image) error {
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return err
+	}
+	dir := filepath.Dir(path)
+	tmp, err := os.CreateTemp(dir, "."+filepath.Base(path)+".*.tmp")
+	if err != nil {
+		return err
+	}
+	tmpPath := tmp.Name()
+	encodeErr := nativewebp.Encode(tmp, img, nil)
+	closeErr := tmp.Close()
+	if encodeErr != nil || closeErr != nil {
+		_ = os.Remove(tmpPath)
+		if encodeErr != nil {
+			return encodeErr
+		}
+		return closeErr
+	}
+	if err := os.Rename(tmpPath, path); err != nil {
+		if removeErr := os.Remove(path); removeErr != nil && !errors.Is(removeErr, os.ErrNotExist) {
+			_ = os.Remove(tmpPath)
+			return err
+		}
+		if renameErr := os.Rename(tmpPath, path); renameErr != nil {
+			_ = os.Remove(tmpPath)
+			return renameErr
+		}
+	}
 	return nil
 }
 
