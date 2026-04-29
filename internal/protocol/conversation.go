@@ -16,6 +16,7 @@ import (
 
 	"chatgpt2api/internal/backend"
 	"chatgpt2api/internal/service"
+	"chatgpt2api/internal/storage"
 	"chatgpt2api/internal/util"
 )
 
@@ -29,6 +30,7 @@ type ImageConfig interface {
 type Engine struct {
 	Accounts *service.AccountService
 	Config   ImageConfig
+	Storage  storage.JSONDocumentBackend
 	Proxy    *service.ProxyService
 	Logger   *service.Logger
 
@@ -542,12 +544,21 @@ func (e *Engine) writeImageOwnerMetadata(rel, ownerID string) {
 	if e == nil || e.Config == nil || ownerID == "" {
 		return
 	}
+	value := map[string]any{"owner_id": ownerID, "updated_at": time.Now().UTC().Format(time.RFC3339Nano)}
+	if e.Storage != nil {
+		_ = e.Storage.SaveJSONDocument(imageOwnerDocumentName(rel), value)
+		return
+	}
 	metaPath := filepath.Join(e.Config.ImageMetadataDir(), filepath.FromSlash(filepath.ToSlash(rel))+".json")
 	_ = os.MkdirAll(filepath.Dir(metaPath), 0o755)
-	data, err := json.Marshal(map[string]any{"owner_id": ownerID, "updated_at": time.Now().UTC().Format(time.RFC3339Nano)})
+	data, err := json.Marshal(value)
 	if err == nil {
 		_ = os.WriteFile(metaPath, data, 0o644)
 	}
+}
+
+func imageOwnerDocumentName(rel string) string {
+	return "image_metadata/" + filepath.ToSlash(rel) + ".json"
 }
 
 func IsTokenInvalidError(message string) bool {

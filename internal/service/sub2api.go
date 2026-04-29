@@ -6,19 +6,21 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"os"
 	"path/filepath"
 	"strings"
 	"sync"
 	"time"
 
+	"chatgpt2api/internal/storage"
 	"chatgpt2api/internal/util"
 )
 
 type Sub2APIConfig struct {
 	mu      sync.Mutex
 	path    string
+	store   storage.JSONDocumentBackend
 	servers []map[string]any
+	docName string
 }
 
 type Sub2APIService struct {
@@ -33,8 +35,8 @@ type cachedJWT struct {
 	expiresAt time.Time
 }
 
-func NewSub2APIConfig(dataDir string) *Sub2APIConfig {
-	c := &Sub2APIConfig{path: filepath.Join(dataDir, "sub2api_config.json")}
+func NewSub2APIConfig(dataDir string, backend ...storage.Backend) *Sub2APIConfig {
+	c := &Sub2APIConfig{path: filepath.Join(dataDir, "sub2api_config.json"), store: firstJSONDocumentStore(backend), docName: "sub2api_config.json"}
 	c.servers = c.load()
 	return c
 }
@@ -132,14 +134,7 @@ func (c *Sub2APIConfig) GetImportJob(id string) map[string]any {
 }
 
 func (c *Sub2APIConfig) load() []map[string]any {
-	data, err := os.ReadFile(c.path)
-	if err != nil {
-		return nil
-	}
-	var raw []map[string]any
-	if json.Unmarshal(data, &raw) != nil {
-		return nil
-	}
+	raw := util.AsMapSlice(loadStoredJSON(c.store, c.docName, c.path))
 	out := make([]map[string]any, 0, len(raw))
 	for _, item := range raw {
 		out = append(out, normalizeSub2Server(item))
@@ -148,12 +143,7 @@ func (c *Sub2APIConfig) load() []map[string]any {
 }
 
 func (c *Sub2APIConfig) saveLocked() error {
-	_ = os.MkdirAll(filepath.Dir(c.path), 0o755)
-	data, err := json.MarshalIndent(c.servers, "", "  ")
-	if err != nil {
-		return err
-	}
-	return os.WriteFile(c.path, append(data, '\n'), 0o644)
+	return saveStoredJSON(c.store, c.docName, c.path, c.servers)
 }
 
 func (s *Sub2APIService) ListRemoteGroups(ctx context.Context, server map[string]any) ([]map[string]any, error) {

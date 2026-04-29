@@ -9,6 +9,7 @@ import (
 	"sync"
 	"time"
 
+	"chatgpt2api/internal/storage"
 	"chatgpt2api/internal/util"
 )
 
@@ -18,8 +19,9 @@ const (
 )
 
 type LogService struct {
-	mu   sync.Mutex
-	path string
+	mu    sync.Mutex
+	path  string
+	store storage.LogBackend
 }
 
 type userUsageDay struct {
@@ -37,10 +39,10 @@ type userUsageAccumulator struct {
 	Daily     map[string]*userUsageDay
 }
 
-func NewLogService(dataDir string) *LogService {
+func NewLogService(dataDir string, backend ...storage.Backend) *LogService {
 	path := filepath.Join(dataDir, "logs.jsonl")
 	_ = os.MkdirAll(filepath.Dir(path), 0o755)
-	return &LogService{path: path}
+	return &LogService{path: path, store: firstLogStore(backend)}
 }
 
 func (s *LogService) Add(logType, summary string, detail map[string]any) {
@@ -52,6 +54,12 @@ func (s *LogService) Add(logType, summary string, detail map[string]any) {
 		"type":    logType,
 		"summary": summary,
 		"detail":  detail,
+	}
+	if s.store != nil {
+		s.mu.Lock()
+		defer s.mu.Unlock()
+		_ = s.store.AppendLog(item)
+		return
 	}
 	data, err := json.Marshal(item)
 	if err != nil {
@@ -70,6 +78,12 @@ func (s *LogService) Add(logType, summary string, detail map[string]any) {
 func (s *LogService) List(logType, startDate, endDate string, limit int) []map[string]any {
 	if limit <= 0 {
 		limit = 200
+	}
+	if s.store != nil {
+		items, err := s.store.QueryLogs(logType, startDate, endDate, limit)
+		if err == nil {
+			return items
+		}
 	}
 	file, err := os.Open(s.path)
 	if err != nil {
@@ -112,63 +126,82 @@ func (s *LogService) UserUsageStats(days int) map[string]map[string]any {
 	if len(dates) == 0 {
 		return out
 	}
+	startDate := dates[0]
+	endDate := dates[len(dates)-1]
+	byUser := map[string]*userUsageAccumulator{}
+	if s.store != nil {
+		items, err := s.store.QueryLogs(LogTypeCall, startDate, endDate, 0)
+		if err == nil {
+			for _, item := range items {
+				accumulateUserUsageLog(byUser, item, startDate, endDate)
+			}
+			for userID, acc := range byUser {
+				out[userID] = userUsageStatsMap(acc, dates)
+			}
+			return out
+		}
+	}
 	file, err := os.Open(s.path)
 	if err != nil {
 		return out
 	}
 	defer file.Close()
-	startDate := dates[0]
-	endDate := dates[len(dates)-1]
-	byUser := map[string]*userUsageAccumulator{}
 	scanner := bufio.NewScanner(file)
 	for scanner.Scan() {
 		var item map[string]any
 		if json.Unmarshal([]byte(scanner.Text()), &item) != nil || item["type"] != LogTypeCall {
 			continue
 		}
-		day := logDay(item)
-		if day == "" || day < startDate || day > endDate {
-			continue
-		}
-		detail := util.StringMap(item["detail"])
-		userID := util.Clean(detail["subject_id"])
-		if userID == "" {
-			userID = util.Clean(detail["key_id"])
-		}
-		if userID == "" {
-			continue
-		}
-		acc := byUser[userID]
-		if acc == nil {
-			acc = newUserUsageAccumulator()
-			byUser[userID] = acc
-		}
-		status := util.Clean(detail["status"])
-		quotaUsed := logQuotaUsed(detail, status)
-		acc.Calls++
-		acc.QuotaUsed += quotaUsed
-		if status == "success" {
-			acc.Success++
-		} else if status == "failed" {
-			acc.Failure++
-		}
-		daily := acc.Daily[day]
-		if daily == nil {
-			daily = &userUsageDay{}
-			acc.Daily[day] = daily
-		}
-		daily.Calls++
-		daily.QuotaUsed += quotaUsed
-		if status == "success" {
-			daily.Success++
-		} else if status == "failed" {
-			daily.Failure++
-		}
+		accumulateUserUsageLog(byUser, item, startDate, endDate)
 	}
 	for userID, acc := range byUser {
 		out[userID] = userUsageStatsMap(acc, dates)
 	}
 	return out
+}
+
+func accumulateUserUsageLog(byUser map[string]*userUsageAccumulator, item map[string]any, startDate, endDate string) {
+	if item["type"] != LogTypeCall {
+		return
+	}
+	day := logDay(item)
+	if day == "" || day < startDate || day > endDate {
+		return
+	}
+	detail := util.StringMap(item["detail"])
+	userID := util.Clean(detail["subject_id"])
+	if userID == "" {
+		userID = util.Clean(detail["key_id"])
+	}
+	if userID == "" {
+		return
+	}
+	acc := byUser[userID]
+	if acc == nil {
+		acc = newUserUsageAccumulator()
+		byUser[userID] = acc
+	}
+	status := util.Clean(detail["status"])
+	quotaUsed := logQuotaUsed(detail, status)
+	acc.Calls++
+	acc.QuotaUsed += quotaUsed
+	if status == "success" {
+		acc.Success++
+	} else if status == "failed" {
+		acc.Failure++
+	}
+	daily := acc.Daily[day]
+	if daily == nil {
+		daily = &userUsageDay{}
+		acc.Daily[day] = daily
+	}
+	daily.Calls++
+	daily.QuotaUsed += quotaUsed
+	if status == "success" {
+		daily.Success++
+	} else if status == "failed" {
+		daily.Failure++
+	}
 }
 
 func ZeroUserUsageStats(days int) map[string]any {

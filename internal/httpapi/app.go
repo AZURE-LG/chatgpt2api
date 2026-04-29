@@ -16,6 +16,7 @@ import (
 	"chatgpt2api/internal/config"
 	"chatgpt2api/internal/protocol"
 	"chatgpt2api/internal/service"
+	"chatgpt2api/internal/storage"
 	"chatgpt2api/internal/util"
 	"chatgpt2api/internal/version"
 )
@@ -49,17 +50,18 @@ func NewApp() (*App, error) {
 		return nil, err
 	}
 	ctx, cancel := context.WithCancel(context.Background())
-	logs := service.NewLogService(cfg.DataDir)
+	logs := service.NewLogService(cfg.DataDir, storageBackend)
 	logger := service.NewLogger(cfg.LogLevels)
 	proxy := service.NewProxyService(cfg)
 	accounts := service.NewAccountService(storageBackend, cfg, proxy, logs)
 	auth := service.NewAuthService(storageBackend)
-	engine := &protocol.Engine{Accounts: accounts, Config: cfg, Proxy: proxy, Logger: logger}
-	app := &App{config: cfg, auth: auth, accounts: accounts, logs: logs, logger: logger, proxy: proxy, engine: engine, images: service.NewImageService(cfg), announce: service.NewAnnouncementService(cfg.DataDir), cpa: service.NewCPAConfig(cfg.DataDir), sub2: service.NewSub2APIConfig(cfg.DataDir), cancel: cancel}
+	documentStore, _ := storageBackend.(storage.JSONDocumentBackend)
+	engine := &protocol.Engine{Accounts: accounts, Config: cfg, Storage: documentStore, Proxy: proxy, Logger: logger}
+	app := &App{config: cfg, auth: auth, accounts: accounts, logs: logs, logger: logger, proxy: proxy, engine: engine, images: service.NewImageService(cfg, storageBackend), announce: service.NewAnnouncementService(cfg.DataDir, storageBackend), cpa: service.NewCPAConfig(cfg.DataDir, storageBackend), sub2: service.NewSub2APIConfig(cfg.DataDir, storageBackend), cancel: cancel}
 	app.cpaImport = service.NewCPAImportService(app.cpa, accounts, proxy)
 	app.sub2Import = service.NewSub2APIService(app.sub2, accounts)
-	app.register = service.NewRegisterService(cfg.DataDir, accounts)
-	app.tasks = service.NewImageTaskService(filepath.Join(cfg.DataDir, "image_tasks.json"),
+	app.register = service.NewRegisterService(cfg.DataDir, accounts, storageBackend)
+	app.tasks = service.NewStoredImageTaskService(filepath.Join(cfg.DataDir, "image_tasks.json"), storageBackend,
 		func(ctx context.Context, identity service.Identity, payload map[string]any) (map[string]any, error) {
 			return app.runLoggedImageTask(ctx, identity, payload, "/api/image-tasks/generations", "文生图", func(ctx context.Context, payload map[string]any) (map[string]any, error) {
 				result, _, err := engine.HandleImageGenerations(ctx, payload)

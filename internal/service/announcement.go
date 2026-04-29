@@ -1,22 +1,23 @@
 package service
 
 import (
-	"encoding/json"
-	"os"
 	"path/filepath"
 	"sync"
 
+	"chatgpt2api/internal/storage"
 	"chatgpt2api/internal/util"
 )
 
 type AnnouncementService struct {
-	mu    sync.Mutex
-	path  string
-	items []map[string]any
+	mu      sync.Mutex
+	path    string
+	store   storage.JSONDocumentBackend
+	items   []map[string]any
+	docName string
 }
 
-func NewAnnouncementService(dataDir string) *AnnouncementService {
-	s := &AnnouncementService{path: filepath.Join(dataDir, "announcements.json")}
+func NewAnnouncementService(dataDir string, backend ...storage.Backend) *AnnouncementService {
+	s := &AnnouncementService{path: filepath.Join(dataDir, "announcements.json"), store: firstJSONDocumentStore(backend), docName: "announcements.json"}
 	s.items = s.load()
 	return s
 }
@@ -107,14 +108,7 @@ func (s *AnnouncementService) Delete(id string) bool {
 }
 
 func (s *AnnouncementService) load() []map[string]any {
-	data, err := os.ReadFile(s.path)
-	if err != nil {
-		return nil
-	}
-	var raw any
-	if json.Unmarshal(data, &raw) != nil {
-		return nil
-	}
+	raw := loadStoredJSON(s.store, s.docName, s.path)
 	items := make([]map[string]any, 0)
 	for _, item := range anyList(raw) {
 		if itemMap, ok := item.(map[string]any); ok {
@@ -128,12 +122,7 @@ func (s *AnnouncementService) load() []map[string]any {
 }
 
 func (s *AnnouncementService) saveLocked() error {
-	_ = os.MkdirAll(filepath.Dir(s.path), 0o755)
-	data, err := json.MarshalIndent(s.items, "", "  ")
-	if err != nil {
-		return err
-	}
-	return os.WriteFile(s.path, append(data, '\n'), 0o644)
+	return saveStoredJSON(s.store, s.docName, s.path, s.items)
 }
 
 func normalizeAnnouncement(raw map[string]any) map[string]any {

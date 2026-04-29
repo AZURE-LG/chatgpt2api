@@ -16,6 +16,8 @@ import (
 	"strings"
 	"time"
 
+	"chatgpt2api/internal/storage"
+
 	"github.com/HugoSmits86/nativewebp"
 )
 
@@ -38,10 +40,11 @@ type ImageAccessScope struct {
 
 type ImageService struct {
 	config ImageConfig
+	store  storage.JSONDocumentBackend
 }
 
-func NewImageService(config ImageConfig) *ImageService {
-	return &ImageService{config: config}
+func NewImageService(config ImageConfig, backend ...storage.Backend) *ImageService {
+	return &ImageService{config: config, store: firstJSONDocumentStore(backend)}
 }
 
 func (s *ImageService) ListImages(baseURL, startDate, endDate string, scope ImageAccessScope) map[string]any {
@@ -152,7 +155,7 @@ func (s *ImageService) DeleteImages(paths []string, scope ImageAccessScope) (map
 			missing++
 			continue
 		}
-		if err := removeImageThumbnail(thumbnailRoot, rel); err != nil {
+		if err := s.removeImageThumbnail(thumbnailRoot, rel); err != nil {
 			return nil, err
 		}
 		if err := s.removeImageOwner(rel); err != nil {
@@ -215,7 +218,7 @@ func (s *ImageService) ensureThumbnail(sourcePath, rel string) map[string]any {
 		return map[string]any{}
 	}
 	if thumbInfo, err := os.Stat(thumbPath); err == nil && !thumbInfo.ModTime().Before(sourceInfo.ModTime()) {
-		meta := readImageMetadata(metaPath, sourceInfo.ModTime())
+		meta := s.readThumbnailMetadata(rel, metaPath, sourceInfo.ModTime())
 		if isCurrentThumbnailMetadata(meta) {
 			result := map[string]any{"thumbnail_rel": filepath.ToSlash(strings.TrimPrefix(strings.TrimPrefix(thumbPath, s.config.ImageThumbnailsDir()), string(filepath.Separator)))}
 			for key, value := range meta {
@@ -249,7 +252,7 @@ func (s *ImageService) ensureThumbnail(sourcePath, rel string) map[string]any {
 		_ = os.Remove(thumbPath)
 		return map[string]any{}
 	}
-	_ = writeJSONFile(metaPath, map[string]any{
+	_ = s.writeThumbnailMetadata(rel, metaPath, map[string]any{
 		"width":             width,
 		"height":            height,
 		"thumbnail_size":    ThumbnailSize,
@@ -262,6 +265,14 @@ func (s *ImageService) imageOwner(rel string) string {
 	metaPath, err := s.imageOwnerMetadataPath(rel)
 	if err != nil {
 		return ""
+	}
+	if s.store != nil {
+		raw, err := s.store.LoadJSONDocument(imageOwnerDocumentName(rel))
+		if err == nil {
+			if meta, ok := raw.(map[string]any); ok {
+				return strings.TrimSpace(toString(meta["owner_id"]))
+			}
+		}
 	}
 	data, err := os.ReadFile(metaPath)
 	if err != nil {
@@ -279,19 +290,26 @@ func (s *ImageService) writeImageOwner(rel, ownerID string) error {
 	if err != nil {
 		return err
 	}
+	value := map[string]any{
+		"owner_id":   ownerID,
+		"updated_at": time.Now().UTC().Format(time.RFC3339Nano),
+	}
+	if s.store != nil {
+		return s.store.SaveJSONDocument(imageOwnerDocumentName(rel), value)
+	}
 	if err := os.MkdirAll(filepath.Dir(metaPath), 0o755); err != nil {
 		return err
 	}
-	return writeJSONFile(metaPath, map[string]any{
-		"owner_id":   ownerID,
-		"updated_at": time.Now().UTC().Format(time.RFC3339Nano),
-	})
+	return writeJSONFile(metaPath, value)
 }
 
 func (s *ImageService) removeImageOwner(rel string) error {
 	metaPath, err := s.imageOwnerMetadataPath(rel)
 	if err != nil {
 		return err
+	}
+	if s.store != nil {
+		return s.store.DeleteJSONDocument(imageOwnerDocumentName(rel))
 	}
 	removeErr := os.Remove(metaPath)
 	if removeErr != nil && !errors.Is(removeErr, os.ErrNotExist) {
@@ -315,6 +333,42 @@ func (s *ImageService) imageOwnerMetadataPath(rel string) (string, error) {
 		return "", errors.New("invalid image path")
 	}
 	return metaPath, nil
+}
+
+func (s *ImageService) readThumbnailMetadata(rel, metaPath string, sourceMtime time.Time) map[string]any {
+	if s.store != nil {
+		raw, err := s.store.LoadJSONDocument(thumbnailMetadataDocumentName(rel))
+		if err == nil {
+			if meta, ok := raw.(map[string]any); ok && meta["width"] != nil && meta["height"] != nil {
+				return meta
+			}
+		}
+	}
+	return readImageMetadata(metaPath, sourceMtime)
+}
+
+func (s *ImageService) writeThumbnailMetadata(rel, metaPath string, value map[string]any) error {
+	if s.store != nil {
+		return s.store.SaveJSONDocument(thumbnailMetadataDocumentName(rel), value)
+	}
+	return writeJSONFile(metaPath, value)
+}
+
+func (s *ImageService) removeImageThumbnail(root, rel string) error {
+	if s.store != nil {
+		if err := s.store.DeleteJSONDocument(thumbnailMetadataDocumentName(rel)); err != nil {
+			return err
+		}
+	}
+	return removeImageThumbnail(root, rel)
+}
+
+func imageOwnerDocumentName(rel string) string {
+	return "image_metadata/" + filepath.ToSlash(rel) + ".json"
+}
+
+func thumbnailMetadataDocumentName(rel string) string {
+	return "image_thumbnails/" + filepath.ToSlash(rel) + ".webp.json"
 }
 
 func publicAssetURL(baseURL, prefix, rel string) string {

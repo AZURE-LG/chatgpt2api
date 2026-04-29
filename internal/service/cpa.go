@@ -5,19 +5,21 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
-	"os"
 	"path/filepath"
 	"strings"
 	"sync"
 	"time"
 
+	"chatgpt2api/internal/storage"
 	"chatgpt2api/internal/util"
 )
 
 type CPAConfig struct {
-	mu    sync.Mutex
-	path  string
-	pools []map[string]any
+	mu      sync.Mutex
+	path    string
+	store   storage.JSONDocumentBackend
+	pools   []map[string]any
+	docName string
 }
 
 type CPAImportService struct {
@@ -26,8 +28,8 @@ type CPAImportService struct {
 	proxy    *ProxyService
 }
 
-func NewCPAConfig(dataDir string) *CPAConfig {
-	c := &CPAConfig{path: filepath.Join(dataDir, "cpa_config.json")}
+func NewCPAConfig(dataDir string, backend ...storage.Backend) *CPAConfig {
+	c := &CPAConfig{path: filepath.Join(dataDir, "cpa_config.json"), store: firstJSONDocumentStore(backend), docName: "cpa_config.json"}
 	c.pools = c.load()
 	return c
 }
@@ -126,14 +128,7 @@ func (c *CPAConfig) GetImportJob(id string) map[string]any {
 }
 
 func (c *CPAConfig) load() []map[string]any {
-	data, err := os.ReadFile(c.path)
-	if err != nil {
-		return nil
-	}
-	var raw any
-	if json.Unmarshal(data, &raw) != nil {
-		return nil
-	}
+	raw := loadStoredJSON(c.store, c.docName, c.path)
 	if obj, ok := raw.(map[string]any); ok && obj["base_url"] != nil {
 		pool := normalizeCPAPool(obj)
 		if util.Clean(pool["base_url"]) != "" {
@@ -151,12 +146,7 @@ func (c *CPAConfig) load() []map[string]any {
 }
 
 func (c *CPAConfig) saveLocked() error {
-	_ = os.MkdirAll(filepath.Dir(c.path), 0o755)
-	data, err := json.MarshalIndent(c.pools, "", "  ")
-	if err != nil {
-		return err
-	}
-	return os.WriteFile(c.path, append(data, '\n'), 0o644)
+	return saveStoredJSON(c.store, c.docName, c.path, c.pools)
 }
 
 func (s *CPAImportService) ListRemoteFiles(ctx context.Context, pool map[string]any) ([]map[string]any, error) {

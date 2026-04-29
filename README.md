@@ -60,10 +60,26 @@ CHATGPT2API_AUTH_KEY=your_secret_key ./chatgpt2api
 
 运行时配置统一写在 `.env` 中；容器部署时也可以用平台环境变量覆盖 `.env` 中的同名值。支持通过环境变量 `STORAGE_BACKEND` 切换存储方式：
 
-- `json` - 本地 JSON 文件（默认）
-- `sqlite` - 本地 SQLite 数据库
+- `sqlite` - 本地 SQLite 数据库（默认）
+- `json` - 本地 JSON 文件
 - `postgres` - 外部 PostgreSQL（需配置 `DATABASE_URL`）
 - `git` - Git 私有仓库（需配置 `GIT_REPO_URL` 和 `GIT_TOKEN`）
+
+示例：使用 SQLite
+```env
+STORAGE_BACKEND=sqlite
+DATABASE_URL=sqlite:////app/data/chatgpt2api.db
+```
+
+从 JSON 文件存储迁移到 SQLite：
+```bash
+docker compose down
+python3 scripts/migrate-json-to-sqlite.py --data-dir ./data --db ./data/chatgpt2api.db
+# 编辑 .env：STORAGE_BACKEND=sqlite，DATABASE_URL=sqlite:////app/data/chatgpt2api.db
+docker compose up -d
+```
+
+迁移脚本会导入 `data` 下的 JSON 文件、`logs.jsonl`、账号和 auth key 数据；如果目标库已存在，会先生成同目录 `.bak-时间戳` 备份。
 
 示例：使用 PostgreSQL
 ```yaml

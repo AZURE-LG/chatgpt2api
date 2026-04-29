@@ -91,10 +91,6 @@ func (e *Engine) responseContextStore() *ResponseContextStore {
 	return e.ResponseContexts
 }
 
-func (e *Engine) responseContextFromPrevious(raw any) (ResponseContext, error) {
-	return e.responseContextFromPreviousScoped("", raw)
-}
-
 func (e *Engine) responseContextFromPreviousScoped(scope string, raw any) (ResponseContext, error) {
 	id := strings.TrimSpace(util.Clean(raw))
 	if id == "" {
@@ -105,10 +101,6 @@ func (e *Engine) responseContextFromPreviousScoped(scope string, raw any) (Respo
 		return ResponseContext{}, HTTPError{Status: 400, Message: "previous_response_id not found or expired"}
 	}
 	return ctx, nil
-}
-
-func (e *Engine) rememberResponseContextEvents(events <-chan map[string]any, base ResponseContext) <-chan map[string]any {
-	return e.rememberResponseContextEventsScoped("", events, base)
 }
 
 func (e *Engine) rememberResponseContextEventsScoped(scope string, events <-chan map[string]any, base ResponseContext) <-chan map[string]any {

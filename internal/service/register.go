@@ -14,13 +14,13 @@ import (
 	"net/http"
 	"net/http/cookiejar"
 	"net/url"
-	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
 	"time"
 
+	"chatgpt2api/internal/storage"
 	"chatgpt2api/internal/util"
 )
 
@@ -52,6 +52,8 @@ var (
 type RegisterService struct {
 	mu          sync.Mutex
 	path        string
+	store       storage.JSONDocumentBackend
+	docName     string
 	accounts    *AccountService
 	config      map[string]any
 	logs        []map[string]any
@@ -82,9 +84,11 @@ type registerSentinelTokenGenerator struct {
 	sid       string
 }
 
-func NewRegisterService(dataDir string, accounts *AccountService) *RegisterService {
+func NewRegisterService(dataDir string, accounts *AccountService, backend ...storage.Backend) *RegisterService {
 	s := &RegisterService{
 		path:        filepath.Join(dataDir, "register.json"),
+		store:       firstJSONDocumentStore(backend),
+		docName:     "register.json",
 		accounts:    accounts,
 		config:      registerDefaultConfig(),
 		subscribers: map[chan string]struct{}{},
@@ -1055,24 +1059,15 @@ func normalizeRegisterMailConfig(raw map[string]any) map[string]any {
 }
 
 func (s *RegisterService) load() map[string]any {
-	data, err := os.ReadFile(s.path)
-	if err != nil {
-		return normalizeRegisterConfig(nil)
-	}
-	var raw map[string]any
-	if json.Unmarshal(data, &raw) != nil {
+	raw, ok := loadStoredJSON(s.store, s.docName, s.path).(map[string]any)
+	if !ok {
 		return normalizeRegisterConfig(nil)
 	}
 	return normalizeRegisterConfig(raw)
 }
 
 func (s *RegisterService) saveLocked() {
-	_ = os.MkdirAll(filepath.Dir(s.path), 0o755)
-	data, err := json.MarshalIndent(s.config, "", "  ")
-	if err != nil {
-		return
-	}
-	_ = os.WriteFile(s.path, append(data, '\n'), 0o644)
+	_ = saveStoredJSON(s.store, s.docName, s.path, s.config)
 }
 
 func (s *RegisterService) snapshotLocked() map[string]any {

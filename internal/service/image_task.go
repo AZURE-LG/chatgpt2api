@@ -11,6 +11,7 @@ import (
 	"sync"
 	"time"
 
+	"chatgpt2api/internal/storage"
 	"chatgpt2api/internal/util"
 )
 
@@ -27,6 +28,8 @@ type ImageTaskHandler func(context.Context, Identity, map[string]any) (map[strin
 type ImageTaskService struct {
 	mu                  sync.RWMutex
 	path                string
+	store               storage.JSONDocumentBackend
+	docName             string
 	generation          ImageTaskHandler
 	edit                ImageTaskHandler
 	retentionGetter     func() int
@@ -48,7 +51,15 @@ func (e ImageTaskLimitError) Error() string {
 }
 
 func NewImageTaskService(path string, generation ImageTaskHandler, edit ImageTaskHandler, retentionGetter func() int, limitGetters ...func() int) *ImageTaskService {
-	s := &ImageTaskService{path: path, generation: generation, edit: edit, retentionGetter: retentionGetter, tasks: map[string]map[string]any{}, cancels: map[string]context.CancelFunc{}, ownerSubmitTimes: map[string][]time.Time{}}
+	return newImageTaskService(path, nil, generation, edit, retentionGetter, limitGetters...)
+}
+
+func NewStoredImageTaskService(path string, backend storage.Backend, generation ImageTaskHandler, edit ImageTaskHandler, retentionGetter func() int, limitGetters ...func() int) *ImageTaskService {
+	return newImageTaskService(path, jsonDocumentStoreFromBackend(backend), generation, edit, retentionGetter, limitGetters...)
+}
+
+func newImageTaskService(path string, store storage.JSONDocumentBackend, generation ImageTaskHandler, edit ImageTaskHandler, retentionGetter func() int, limitGetters ...func() int) *ImageTaskService {
+	s := &ImageTaskService{path: path, store: store, docName: "image_tasks.json", generation: generation, edit: edit, retentionGetter: retentionGetter, tasks: map[string]map[string]any{}, cancels: map[string]context.CancelFunc{}, ownerSubmitTimes: map[string][]time.Time{}}
 	if len(limitGetters) > 0 {
 		s.concurrentLimit = limitGetters[0]
 	}
@@ -377,14 +388,7 @@ func (s *ImageTaskService) removeTaskCancel(key string) {
 }
 
 func (s *ImageTaskService) loadLocked() map[string]map[string]any {
-	data, err := os.ReadFile(s.path)
-	if err != nil {
-		return map[string]map[string]any{}
-	}
-	var raw any
-	if json.Unmarshal(data, &raw) != nil {
-		return map[string]map[string]any{}
-	}
+	raw := loadStoredJSON(s.store, s.docName, s.path)
 	if obj, ok := raw.(map[string]any); ok {
 		raw = obj["tasks"]
 	}
@@ -429,7 +433,11 @@ func (s *ImageTaskService) saveLocked() error {
 		items = append(items, task)
 	}
 	sort.Slice(items, func(i, j int) bool { return util.Clean(items[i]["updated_at"]) > util.Clean(items[j]["updated_at"]) })
-	data, err := json.MarshalIndent(map[string]any{"tasks": items}, "", "  ")
+	value := map[string]any{"tasks": items}
+	if s.store != nil {
+		return s.store.SaveJSONDocument(s.docName, value)
+	}
+	data, err := json.MarshalIndent(value, "", "  ")
 	if err != nil {
 		return err
 	}
