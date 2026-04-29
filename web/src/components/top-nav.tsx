@@ -5,7 +5,8 @@ import { Github, Moon, Sun } from "lucide-react";
 import { Link, NavLink, useLocation, useNavigate } from "react-router-dom";
 
 import webConfig from "@/constants/common-env";
-import { clearStoredAuthSession, getStoredAuthSession, type StoredAuthSession } from "@/store/auth";
+import { getVerifiedAuthSession } from "@/lib/session";
+import { clearStoredAuthSession, type StoredAuthSession } from "@/store/auth";
 import { Button } from "@/components/ui/button";
 import { fetchAccounts, type Account } from "@/lib/api";
 import { cn } from "@/lib/utils";
@@ -21,6 +22,7 @@ const adminNavItems = [
   { href: "/accounts", label: "号池管理" },
   { href: "/register", label: "注册机" },
   { href: "/image-manager", label: "图片库" },
+  { href: "/users", label: "用户管理" },
   { href: "/logs", label: "日志管理" },
   { href: "/settings", label: "设置" },
 ];
@@ -28,7 +30,6 @@ const adminNavItems = [
 const linuxDoUserNavItems = [
   { href: "/image", label: "创作台" },
   { href: "/image-manager", label: "图片库" },
-  { href: "/settings", label: "设置" },
 ];
 const userNavItems = [
   { href: "/image", label: "创作台" },
@@ -91,7 +92,7 @@ export function TopNav() {
         return;
       }
 
-      const storedSession = await getStoredAuthSession();
+      const storedSession = await getVerifiedAuthSession();
       if (!active) {
         return;
       }

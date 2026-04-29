@@ -10,6 +10,7 @@ import LoginPage from "@/app/login/page";
 import LogsPage from "@/app/logs/page";
 import RegisterPage from "@/app/register/page";
 import SettingsPage from "@/app/settings/page";
+import UsersPage from "@/app/users/page";
 import { TopNav } from "@/components/top-nav";
 
 export default function App() {
@@ -26,6 +27,7 @@ export default function App() {
             <Route path="/accounts" element={<AccountsPage />} />
             <Route path="/register" element={<RegisterPage />} />
             <Route path="/image-manager" element={<ImageManagerPage />} />
+            <Route path="/users" element={<UsersPage />} />
             <Route path="/logs" element={<LogsPage />} />
             <Route path="/settings" element={<SettingsPage />} />
             <Route path="/image" element={<ImagePage />} />

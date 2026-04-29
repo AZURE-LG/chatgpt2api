@@ -125,6 +125,8 @@ func (a *App) serveHTTP(w http.ResponseWriter, r *http.Request) {
 		a.handlePublicAnnouncements(w, r)
 	case path == "/api/admin/announcements" || strings.HasPrefix(path, "/api/admin/announcements/"):
 		a.handleAdminAnnouncements(w, r)
+	case path == "/api/admin/users" || strings.HasPrefix(path, "/api/admin/users/"):
+		a.handleAdminUsers(w, r)
 	case strings.HasPrefix(path, "/api/auth/users"):
 		a.handleUserKeys(w, r)
 	case path == "/api/accounts" || strings.HasPrefix(path, "/api/accounts/"):

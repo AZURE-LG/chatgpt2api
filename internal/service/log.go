@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"time"
 
 	"chatgpt2api/internal/util"
 )
@@ -19,6 +20,21 @@ const (
 type LogService struct {
 	mu   sync.Mutex
 	path string
+}
+
+type userUsageDay struct {
+	Calls     int
+	Success   int
+	Failure   int
+	QuotaUsed int
+}
+
+type userUsageAccumulator struct {
+	Calls     int
+	Success   int
+	Failure   int
+	QuotaUsed int
+	Daily     map[string]*userUsageDay
 }
 
 func NewLogService(dataDir string) *LogService {
@@ -88,6 +104,145 @@ func (s *LogService) List(logType, startDate, endDate string, limit int) []map[s
 		out = append(out, item)
 	}
 	return out
+}
+
+func (s *LogService) UserUsageStats(days int) map[string]map[string]any {
+	dates := usageDates(days)
+	out := map[string]map[string]any{}
+	if len(dates) == 0 {
+		return out
+	}
+	file, err := os.Open(s.path)
+	if err != nil {
+		return out
+	}
+	defer file.Close()
+	startDate := dates[0]
+	endDate := dates[len(dates)-1]
+	byUser := map[string]*userUsageAccumulator{}
+	scanner := bufio.NewScanner(file)
+	for scanner.Scan() {
+		var item map[string]any
+		if json.Unmarshal([]byte(scanner.Text()), &item) != nil || item["type"] != LogTypeCall {
+			continue
+		}
+		day := logDay(item)
+		if day == "" || day < startDate || day > endDate {
+			continue
+		}
+		detail := util.StringMap(item["detail"])
+		userID := util.Clean(detail["subject_id"])
+		if userID == "" {
+			userID = util.Clean(detail["key_id"])
+		}
+		if userID == "" {
+			continue
+		}
+		acc := byUser[userID]
+		if acc == nil {
+			acc = newUserUsageAccumulator()
+			byUser[userID] = acc
+		}
+		status := util.Clean(detail["status"])
+		quotaUsed := logQuotaUsed(detail, status)
+		acc.Calls++
+		acc.QuotaUsed += quotaUsed
+		if status == "success" {
+			acc.Success++
+		} else if status == "failed" {
+			acc.Failure++
+		}
+		daily := acc.Daily[day]
+		if daily == nil {
+			daily = &userUsageDay{}
+			acc.Daily[day] = daily
+		}
+		daily.Calls++
+		daily.QuotaUsed += quotaUsed
+		if status == "success" {
+			daily.Success++
+		} else if status == "failed" {
+			daily.Failure++
+		}
+	}
+	for userID, acc := range byUser {
+		out[userID] = userUsageStatsMap(acc, dates)
+	}
+	return out
+}
+
+func ZeroUserUsageStats(days int) map[string]any {
+	return userUsageStatsMap(newUserUsageAccumulator(), usageDates(days))
+}
+
+func usageDates(days int) []string {
+	if days <= 0 {
+		days = 14
+	}
+	if days > 90 {
+		days = 90
+	}
+	start := time.Now().AddDate(0, 0, -days+1)
+	dates := make([]string, 0, days)
+	for i := 0; i < days; i++ {
+		dates = append(dates, start.AddDate(0, 0, i).Format("2006-01-02"))
+	}
+	return dates
+}
+
+func newUserUsageAccumulator() *userUsageAccumulator {
+	return &userUsageAccumulator{Daily: map[string]*userUsageDay{}}
+}
+
+func userUsageStatsMap(acc *userUsageAccumulator, dates []string) map[string]any {
+	if acc == nil {
+		acc = newUserUsageAccumulator()
+	}
+	curve := make([]map[string]any, 0, len(dates))
+	for _, date := range dates {
+		day := acc.Daily[date]
+		if day == nil {
+			day = &userUsageDay{}
+		}
+		curve = append(curve, map[string]any{
+			"date":       date,
+			"calls":      day.Calls,
+			"success":    day.Success,
+			"failure":    day.Failure,
+			"quota_used": day.QuotaUsed,
+		})
+	}
+	return map[string]any{
+		"call_count":    acc.Calls,
+		"success_count": acc.Success,
+		"failure_count": acc.Failure,
+		"quota_used":    acc.QuotaUsed,
+		"usage_curve":   curve,
+	}
+}
+
+func logDay(item map[string]any) string {
+	day := util.Clean(item["time"])
+	if len(day) < 10 {
+		return ""
+	}
+	return day[:10]
+}
+
+func logQuotaUsed(detail map[string]any, status string) int {
+	if status != "success" {
+		return 0
+	}
+	if urls := util.AsStringSlice(detail["urls"]); len(urls) > 0 {
+		return len(urls)
+	}
+	endpoint := util.Clean(detail["endpoint"])
+	switch endpoint {
+	case "/v1/images/generations", "/v1/images/edits", "/api/image-tasks/generations", "/api/image-tasks/edits":
+		return 1
+	default:
+		return 0
+	}
 }
 
 type Logger struct {

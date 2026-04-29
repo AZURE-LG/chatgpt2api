@@ -115,6 +115,153 @@ func userKeyScope(identity service.Identity) (service.AuthKeyFilter, service.Aut
 	return filter, service.AuthOwner{ID: identity.OwnerID, Name: identity.Name, Provider: identity.Provider}, true
 }
 
+func (a *App) handleAdminUsers(w http.ResponseWriter, r *http.Request) {
+	if _, ok := a.requireAdmin(w, r); !ok {
+		return
+	}
+	base := "/api/admin/users"
+	if r.URL.Path == base {
+		switch r.Method {
+		case http.MethodGet:
+			util.WriteJSON(w, http.StatusOK, map[string]any{"items": a.managedUsers()})
+		case http.MethodPost:
+			body, _ := readJSONMap(r)
+			apiKey, raw, err := a.auth.CreateAPIKey(service.AuthRoleUser, util.Clean(body["name"]), service.AuthOwner{})
+			if err != nil {
+				util.WriteError(w, http.StatusBadRequest, err.Error())
+				return
+			}
+			items := a.managedUsers()
+			util.WriteJSON(w, http.StatusOK, map[string]any{"item": findManagedUser(items, util.Clean(apiKey["id"])), "api_key": apiKey, "key": raw, "items": items})
+		default:
+			w.WriteHeader(http.StatusMethodNotAllowed)
+		}
+		return
+	}
+
+	parts := splitPath(r.URL.Path)
+	if len(parts) < 4 || parts[0] != "api" || parts[1] != "admin" || parts[2] != "users" {
+		http.NotFound(w, r)
+		return
+	}
+	userID := parts[3]
+	if len(parts) == 5 && parts[4] == "key" {
+		if r.Method != http.MethodGet {
+			w.WriteHeader(http.StatusMethodNotAllowed)
+			return
+		}
+		user := findManagedUser(a.auth.ListUsers(), userID)
+		if user == nil {
+			util.WriteError(w, http.StatusNotFound, "user not found")
+			return
+		}
+		if util.Clean(user["provider"]) == service.AuthProviderLinuxDo {
+			util.WriteError(w, http.StatusForbidden, "Linuxdo user tokens are not managed by administrators")
+			return
+		}
+		key, found := a.auth.RevealUserAPIKey(userID)
+		if !found {
+			util.WriteError(w, http.StatusNotFound, "user API key not found")
+			return
+		}
+		util.WriteJSON(w, http.StatusOK, map[string]any{"key": key})
+		return
+	}
+	if len(parts) == 5 && parts[4] == "reset-key" {
+		if r.Method != http.MethodPost {
+			w.WriteHeader(http.StatusMethodNotAllowed)
+			return
+		}
+		body, _ := readJSONMap(r)
+		user := findManagedUser(a.auth.ListUsers(), userID)
+		if user == nil {
+			util.WriteError(w, http.StatusNotFound, "user not found")
+			return
+		}
+		if util.Clean(user["provider"]) == service.AuthProviderLinuxDo {
+			util.WriteError(w, http.StatusForbidden, "Linuxdo user tokens are not managed by administrators")
+			return
+		}
+		item, apiKey, raw, found, err := a.auth.ResetUserAPIKey(userID, util.Clean(body["name"]))
+		if err != nil {
+			util.WriteError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		if !found {
+			util.WriteError(w, http.StatusNotFound, "user not found")
+			return
+		}
+		items := a.managedUsers()
+		if current := findManagedUser(items, userID); current != nil {
+			item = current
+		}
+		util.WriteJSON(w, http.StatusOK, map[string]any{"item": item, "api_key": apiKey, "key": raw, "items": items})
+		return
+	}
+	if len(parts) != 4 {
+		http.NotFound(w, r)
+		return
+	}
+	switch r.Method {
+	case http.MethodPost:
+		body, _ := readJSONMap(r)
+		updates := map[string]any{}
+		if value, ok := body["name"]; ok {
+			updates["name"] = value
+		}
+		if value, ok := body["enabled"]; ok {
+			updates["enabled"] = value
+		}
+		if len(updates) == 0 {
+			util.WriteError(w, http.StatusBadRequest, "no updates provided")
+			return
+		}
+		item := a.auth.UpdateUser(userID, updates)
+		if item == nil {
+			util.WriteError(w, http.StatusNotFound, "user not found")
+			return
+		}
+		items := a.managedUsers()
+		if current := findManagedUser(items, userID); current != nil {
+			item = current
+		}
+		util.WriteJSON(w, http.StatusOK, map[string]any{"item": item, "items": items})
+	case http.MethodDelete:
+		if !a.auth.DeleteUser(userID) {
+			util.WriteError(w, http.StatusNotFound, "user not found")
+			return
+		}
+		util.WriteJSON(w, http.StatusOK, map[string]any{"items": a.managedUsers()})
+	default:
+		w.WriteHeader(http.StatusMethodNotAllowed)
+	}
+}
+
+func (a *App) managedUsers() []map[string]any {
+	items := a.auth.ListUsers()
+	stats := a.logs.UserUsageStats(14)
+	for _, item := range items {
+		userID := util.Clean(item["id"])
+		usage := stats[userID]
+		if usage == nil {
+			usage = service.ZeroUserUsageStats(14)
+		}
+		for key, value := range usage {
+			item[key] = value
+		}
+	}
+	return items
+}
+
+func findManagedUser(items []map[string]any, id string) map[string]any {
+	for _, item := range items {
+		if item["id"] == id {
+			return item
+		}
+	}
+	return nil
+}
+
 func (a *App) handlePublicAnnouncements(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		w.WriteHeader(http.StatusMethodNotAllowed)

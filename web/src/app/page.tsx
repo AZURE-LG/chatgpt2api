@@ -3,7 +3,8 @@
 import { useEffect } from "react";
 import { useNavigate } from "react-router-dom";
 
-import { getDefaultRouteForRole, getStoredAuthSession } from "@/store/auth";
+import { getVerifiedAuthSession } from "@/lib/session";
+import { getDefaultRouteForRole } from "@/store/auth";
 
 export default function HomePage() {
   const navigate = useNavigate();
@@ -12,7 +13,7 @@ export default function HomePage() {
     let active = true;
 
     const redirect = async () => {
-      const session = await getStoredAuthSession();
+      const session = await getVerifiedAuthSession();
       if (!active) {
         return;
       }

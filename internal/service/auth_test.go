@@ -170,3 +170,134 @@ func TestAuthServiceListSingleAPIKeyForOwnerPrunesDuplicates(t *testing.T) {
 		t.Fatal("pruned duplicate token still authenticated")
 	}
 }
+
+func TestAuthServiceManagedUsersGroupAndControlCredentials(t *testing.T) {
+	backend := storage.NewJSONBackend(
+		filepath.Join(t.TempDir(), "accounts.json"),
+		filepath.Join(t.TempDir(), "auth_keys.json"),
+	)
+	auth := NewAuthService(backend)
+
+	owner := AuthOwner{ID: "linuxdo:123", Name: "linuxdo_user", Provider: AuthProviderLinuxDo}
+	_, sessionRaw, err := auth.UpsertLinuxDoSession(owner)
+	if err != nil {
+		t.Fatalf("UpsertLinuxDoSession() error = %v", err)
+	}
+	_, ownerRaw, err := auth.UpsertAPIKeyForOwner("", owner)
+	if err != nil {
+		t.Fatalf("UpsertAPIKeyForOwner() error = %v", err)
+	}
+	local, localRaw, err := auth.CreateAPIKey(AuthRoleUser, "local user", AuthOwner{})
+	if err != nil {
+		t.Fatalf("CreateAPIKey(local) error = %v", err)
+	}
+
+	users := auth.ListUsers()
+	if len(users) != 2 {
+		t.Fatalf("ListUsers() length = %d users = %#v", len(users), users)
+	}
+	linuxdoUser := findAuthUser(users, owner.ID)
+	if linuxdoUser == nil {
+		t.Fatalf("missing linuxdo user in %#v", users)
+	}
+	if linuxdoUser["name"] != owner.Name || linuxdoUser["provider"] != AuthProviderLinuxDo || linuxdoUser["has_session"] != true || linuxdoUser["has_api_key"] != true {
+		t.Fatalf("linuxdo user = %#v", linuxdoUser)
+	}
+	if _, ok := linuxdoUser["key"]; ok {
+		t.Fatalf("managed user leaked key: %#v", linuxdoUser)
+	}
+	localID, _ := local["id"].(string)
+	localUser := findAuthUser(users, localID)
+	if localUser == nil || localUser["provider"] != AuthProviderLocal || localUser["has_api_key"] != true {
+		t.Fatalf("local user = %#v in %#v", localUser, users)
+	}
+
+	disabled := auth.UpdateUser(owner.ID, map[string]any{"enabled": false})
+	if disabled == nil || disabled["enabled"] != false {
+		t.Fatalf("disabled managed user = %#v", disabled)
+	}
+	if auth.Authenticate(sessionRaw) != nil {
+		t.Fatal("disabled linuxdo session still authenticated")
+	}
+	if auth.Authenticate(ownerRaw) != nil {
+		t.Fatal("disabled linuxdo API key still authenticated")
+	}
+	if auth.Authenticate(localRaw) == nil {
+		t.Fatal("disabling linuxdo user should not affect local user")
+	}
+	disabledSession, disabledSessionRaw, err := auth.UpsertLinuxDoSession(owner)
+	if err != nil {
+		t.Fatalf("UpsertLinuxDoSession(disabled) error = %v", err)
+	}
+	if disabledSession["enabled"] != false {
+		t.Fatalf("disabled linuxdo login session should stay disabled: %#v", disabledSession)
+	}
+	if auth.Authenticate(disabledSessionRaw) != nil {
+		t.Fatal("disabled linuxdo user authenticated after a new login session was issued")
+	}
+	sessionRaw = disabledSessionRaw
+
+	managedUser, apiKey, rotatedRaw, found, err := auth.ResetUserAPIKey(owner.ID, "rotated")
+	if err != nil || !found {
+		t.Fatalf("ResetUserAPIKey(owner) found=%v err=%v", found, err)
+	}
+	if managedUser["id"] != owner.ID || apiKey["owner_id"] != owner.ID || rotatedRaw == "" || rotatedRaw == ownerRaw {
+		t.Fatalf("ResetUserAPIKey(owner) user=%#v apiKey=%#v raw=%q old=%q", managedUser, apiKey, rotatedRaw, ownerRaw)
+	}
+	if auth.Authenticate(ownerRaw) != nil {
+		t.Fatal("old owner API key still authenticated after managed reset")
+	}
+	if auth.Authenticate(rotatedRaw) != nil {
+		t.Fatal("rotated owner API key should keep the disabled user state")
+	}
+	if auth.Authenticate(sessionRaw) != nil {
+		t.Fatal("resetting API key should not re-enable disabled linuxdo session")
+	}
+
+	enabled := auth.UpdateUser(owner.ID, map[string]any{"enabled": true})
+	if enabled == nil || enabled["enabled"] != true {
+		t.Fatalf("enabled managed user = %#v", enabled)
+	}
+	if auth.Authenticate(sessionRaw) == nil {
+		t.Fatal("enabled linuxdo session should authenticate")
+	}
+	if identity := auth.Authenticate(rotatedRaw); identity == nil || identity.ID != owner.ID {
+		t.Fatalf("enabled rotated owner API identity = %#v", identity)
+	}
+	if auth.Authenticate(sessionRaw) == nil || auth.Authenticate(rotatedRaw) == nil {
+		t.Fatal("enabled linuxdo user should authenticate with session and API key")
+	}
+
+	_, _, localRotatedRaw, found, err := auth.ResetUserAPIKey(localID, "")
+	if err != nil || !found {
+		t.Fatalf("ResetUserAPIKey(local) found=%v err=%v", found, err)
+	}
+	if localRotatedRaw == "" || localRotatedRaw == localRaw {
+		t.Fatalf("local reset raw = %q old = %q", localRotatedRaw, localRaw)
+	}
+	if auth.Authenticate(localRaw) != nil {
+		t.Fatal("old local key still authenticated after managed reset")
+	}
+	if identity := auth.Authenticate(localRotatedRaw); identity == nil || identity.ID != localID {
+		t.Fatalf("local rotated identity = %#v", identity)
+	}
+
+	if !auth.DeleteUser(owner.ID) {
+		t.Fatal("DeleteUser(owner) = false")
+	}
+	if auth.Authenticate(sessionRaw) != nil || auth.Authenticate(rotatedRaw) != nil {
+		t.Fatal("deleted linuxdo user still authenticated")
+	}
+	if findAuthUser(auth.ListUsers(), owner.ID) != nil {
+		t.Fatalf("deleted linuxdo user still listed: %#v", auth.ListUsers())
+	}
+}
+
+func findAuthUser(users []map[string]any, id string) map[string]any {
+	for _, user := range users {
+		if user["id"] == id {
+			return user
+		}
+	}
+	return nil
+}

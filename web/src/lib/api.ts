@@ -213,6 +213,37 @@ export type UserKey = {
   last_used_at: string | null;
 };
 
+export type ManagedUser = {
+  id: string;
+  name: string;
+  role: "user";
+  provider: "local" | "linuxdo" | string;
+  owner_id?: string;
+  owner_name?: string;
+  enabled: boolean;
+  has_api_key: boolean;
+  has_session: boolean;
+  api_key_id?: string;
+  api_key_name?: string;
+  session_id?: string;
+  session_name?: string;
+  credential_count: number;
+  created_at: string | null;
+  last_used_at: string | null;
+  updated_at?: string | null;
+  call_count?: number;
+  success_count?: number;
+  failure_count?: number;
+  quota_used?: number;
+  usage_curve?: Array<{
+    date: string;
+    calls: number;
+    success: number;
+    failure: number;
+    quota_used: number;
+  }>;
+};
+
 export type RegisterConfig = {
   enabled: boolean;
   mail: {
@@ -555,6 +586,48 @@ export async function updateUserKey(keyId: string, updates: { enabled?: boolean;
 
 export async function deleteUserKey(keyId: string) {
   return httpRequest<{ items: UserKey[] }>(`/api/auth/users/${keyId}`, {
+    method: "DELETE",
+  });
+}
+
+function managedUserPath(userId: string) {
+  return `/api/admin/users/${encodeURIComponent(userId)}`;
+}
+
+export async function fetchManagedUsers() {
+  return httpRequest<{ items: ManagedUser[] }>("/api/admin/users");
+}
+
+export async function createManagedUser(name: string) {
+  return httpRequest<{ item: ManagedUser; api_key: UserKey; key: string; items: ManagedUser[] }>("/api/admin/users", {
+    method: "POST",
+    body: { name },
+  });
+}
+
+export async function updateManagedUser(userId: string, updates: { enabled?: boolean; name?: string }) {
+  return httpRequest<{ item: ManagedUser; items: ManagedUser[] }>(managedUserPath(userId), {
+    method: "POST",
+    body: updates,
+  });
+}
+
+export async function revealManagedUserKey(userId: string) {
+  return httpRequest<{ key: string }>(`${managedUserPath(userId)}/key`);
+}
+
+export async function resetManagedUserKey(userId: string, name?: string) {
+  return httpRequest<{ item: ManagedUser; api_key: UserKey; key: string; items: ManagedUser[] }>(
+    `${managedUserPath(userId)}/reset-key`,
+    {
+      method: "POST",
+      body: { name: name ?? "" },
+    },
+  );
+}
+
+export async function deleteManagedUser(userId: string) {
+  return httpRequest<{ items: ManagedUser[] }>(managedUserPath(userId), {
     method: "DELETE",
   });
 }

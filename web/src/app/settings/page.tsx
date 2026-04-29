@@ -13,7 +13,6 @@ import { CPAPoolsCard } from "./components/cpa-pools-card";
 import { ImportBrowserDialog } from "./components/import-browser-dialog";
 import { SettingsHeader } from "./components/settings-header";
 import { Sub2APIConnections } from "./components/sub2api-connections";
-import { UserKeysCard } from "./components/user-keys-card";
 import { useSettingsStore } from "./store";
 
 function SettingsDataController() {
@@ -56,23 +55,11 @@ function AdminSettingsPageContent() {
       <section className="flex flex-col gap-4">
         <ConfigCard />
         <AnnouncementsCard />
-        <UserKeysCard />
         <CPAPoolsCard />
         <Sub2APIConnections />
       </section>
       <CPAPoolDialog />
       <ImportBrowserDialog />
-    </>
-  );
-}
-
-function LinuxDoSettingsPageContent() {
-  return (
-    <>
-      <SettingsHeader />
-      <section className="flex flex-col gap-4">
-        <UserKeysCard />
-      </section>
     </>
   );
 }
@@ -90,9 +77,6 @@ export default function SettingsPage() {
 
   if (session.role === "admin") {
     return <AdminSettingsPageContent />;
-  }
-  if (session.provider === "linuxdo") {
-    return <LinuxDoSettingsPageContent />;
   }
   return <Navigate to="/image" replace />;
 }

@@ -421,6 +421,213 @@ func TestLinuxDoUserCanManageOwnKeys(t *testing.T) {
 	}
 }
 
+func TestAdminUsersManageLinuxDoUsers(t *testing.T) {
+	app := newTestApp(t)
+	defer app.Close()
+
+	owner := service.AuthOwner{ID: "linuxdo:123", Name: "linuxdo_user", Provider: service.AuthProviderLinuxDo}
+	_, sessionKey, err := app.auth.UpsertLinuxDoSession(owner)
+	if err != nil {
+		t.Fatalf("UpsertLinuxDoSession() error = %v", err)
+	}
+	_, ownerAPIKey, err := app.auth.UpsertAPIKeyForOwner("", owner)
+	if err != nil {
+		t.Fatalf("UpsertAPIKeyForOwner() error = %v", err)
+	}
+	local, localKey, err := app.auth.CreateAPIKey(service.AuthRoleUser, "local user", service.AuthOwner{})
+	if err != nil {
+		t.Fatalf("CreateAPIKey(local) error = %v", err)
+	}
+	localID, _ := local["id"].(string)
+	app.logs.Add(service.LogTypeCall, "文生图调用完成", map[string]any{
+		"subject_id":  owner.ID,
+		"key_id":      "linuxdo-session",
+		"status":      "success",
+		"endpoint":    "/v1/images/generations",
+		"duration_ms": 120,
+		"urls":        []string{"https://example.test/a.png", "https://example.test/b.png"},
+	})
+	app.logs.Add(service.LogTypeCall, "文生图调用失败", map[string]any{
+		"subject_id": owner.ID,
+		"key_id":     "linuxdo-session",
+		"status":     "failed",
+		"endpoint":   "/v1/images/generations",
+	})
+	app.logs.Add(service.LogTypeCall, "图生图调用完成", map[string]any{
+		"key_id":   localID,
+		"status":   "success",
+		"endpoint": "/api/image-tasks/edits",
+	})
+
+	req := httptest.NewRequest(http.MethodGet, "/api/admin/users", nil)
+	req.Header.Set("Authorization", "Bearer "+sessionKey)
+	res := httptest.NewRecorder()
+	app.Handler().ServeHTTP(res, req)
+	if res.Code != http.StatusForbidden {
+		t.Fatalf("linuxdo admin users status = %d body = %s", res.Code, res.Body.String())
+	}
+
+	req = httptest.NewRequest(http.MethodGet, "/api/admin/users", nil)
+	req.Header.Set("Authorization", "Bearer admin-secret")
+	res = httptest.NewRecorder()
+	app.Handler().ServeHTTP(res, req)
+	if res.Code != http.StatusOK {
+		t.Fatalf("admin users status = %d body = %s", res.Code, res.Body.String())
+	}
+	var list map[string]any
+	if err := json.Unmarshal(res.Body.Bytes(), &list); err != nil {
+		t.Fatalf("admin users json: %v", err)
+	}
+	linuxdoUser := findHTTPItem(logItems(list), owner.ID)
+	if linuxdoUser == nil || linuxdoUser["provider"] != service.AuthProviderLinuxDo || linuxdoUser["has_session"] != true || linuxdoUser["has_api_key"] != true {
+		t.Fatalf("linuxdo managed user = %#v in %#v", linuxdoUser, list)
+	}
+	localUser := findHTTPItem(logItems(list), localID)
+	if localUser == nil || localUser["provider"] != service.AuthProviderLocal || localUser["has_api_key"] != true {
+		t.Fatalf("local managed user = %#v in %#v", localUser, list)
+	}
+	if linuxdoUser["call_count"] != float64(2) || linuxdoUser["success_count"] != float64(1) || linuxdoUser["failure_count"] != float64(1) || linuxdoUser["quota_used"] != float64(2) {
+		t.Fatalf("linuxdo usage stats = %#v", linuxdoUser)
+	}
+	if curve, ok := linuxdoUser["usage_curve"].([]any); !ok || len(curve) != 14 {
+		t.Fatalf("linuxdo usage curve = %#v", linuxdoUser["usage_curve"])
+	}
+	if localUser["call_count"] != float64(1) || localUser["quota_used"] != float64(1) {
+		t.Fatalf("local usage stats = %#v", localUser)
+	}
+
+	req = httptest.NewRequest(http.MethodPost, "/api/admin/users", strings.NewReader(`{"name":"created local"}`))
+	req.Header.Set("Authorization", "Bearer admin-secret")
+	res = httptest.NewRecorder()
+	app.Handler().ServeHTTP(res, req)
+	if res.Code != http.StatusOK {
+		t.Fatalf("create managed user status = %d body = %s", res.Code, res.Body.String())
+	}
+	var created map[string]any
+	if err := json.Unmarshal(res.Body.Bytes(), &created); err != nil {
+		t.Fatalf("create managed user json: %v", err)
+	}
+	createdKey, _ := created["key"].(string)
+	createdItem, _ := created["item"].(map[string]any)
+	if createdKey == "" || createdItem["name"] != "created local" || createdItem["has_api_key"] != true {
+		t.Fatalf("create managed user body = %#v", created)
+	}
+	if identity := app.auth.Authenticate(createdKey); identity == nil || identity.Name != "created local" {
+		t.Fatalf("created managed user identity = %#v", identity)
+	}
+	createdID, _ := createdItem["id"].(string)
+	createdPath := "/api/admin/users/" + url.PathEscape(createdID)
+
+	req = httptest.NewRequest(http.MethodGet, createdPath+"/key", nil)
+	req.Header.Set("Authorization", "Bearer admin-secret")
+	res = httptest.NewRecorder()
+	app.Handler().ServeHTTP(res, req)
+	if res.Code != http.StatusOK {
+		t.Fatalf("reveal local managed key status = %d body = %s", res.Code, res.Body.String())
+	}
+	var revealed map[string]any
+	if err := json.Unmarshal(res.Body.Bytes(), &revealed); err != nil {
+		t.Fatalf("reveal local managed key json: %v", err)
+	}
+	if revealed["key"] != createdKey {
+		t.Fatalf("revealed local managed key = %#v want %q", revealed["key"], createdKey)
+	}
+
+	req = httptest.NewRequest(http.MethodPost, createdPath+"/reset-key", strings.NewReader(`{"name":"rotated local"}`))
+	req.Header.Set("Authorization", "Bearer admin-secret")
+	res = httptest.NewRecorder()
+	app.Handler().ServeHTTP(res, req)
+	if res.Code != http.StatusOK {
+		t.Fatalf("reset local managed key status = %d body = %s", res.Code, res.Body.String())
+	}
+	var reset map[string]any
+	if err := json.Unmarshal(res.Body.Bytes(), &reset); err != nil {
+		t.Fatalf("reset local managed key json: %v", err)
+	}
+	rotatedLocalKey, _ := reset["key"].(string)
+	if rotatedLocalKey == "" || rotatedLocalKey == createdKey {
+		t.Fatalf("reset local managed key body = %#v", reset)
+	}
+	if app.auth.Authenticate(createdKey) != nil {
+		t.Fatal("old created local key still authenticates after reset")
+	}
+	if identity := app.auth.Authenticate(rotatedLocalKey); identity == nil || identity.ID != createdID {
+		t.Fatalf("rotated local managed key identity = %#v", identity)
+	}
+
+	ownerPath := "/api/admin/users/" + url.PathEscape(owner.ID)
+	req = httptest.NewRequest(http.MethodPost, ownerPath+"/reset-key", strings.NewReader(`{"name":"managed token"}`))
+	req.Header.Set("Authorization", "Bearer admin-secret")
+	res = httptest.NewRecorder()
+	app.Handler().ServeHTTP(res, req)
+	if res.Code != http.StatusForbidden {
+		t.Fatalf("reset linuxdo managed key status = %d body = %s", res.Code, res.Body.String())
+	}
+
+	req = httptest.NewRequest(http.MethodGet, ownerPath+"/key", nil)
+	req.Header.Set("Authorization", "Bearer admin-secret")
+	res = httptest.NewRecorder()
+	app.Handler().ServeHTTP(res, req)
+	if res.Code != http.StatusForbidden {
+		t.Fatalf("reveal linuxdo managed key status = %d body = %s", res.Code, res.Body.String())
+	}
+
+	req = httptest.NewRequest(http.MethodPost, ownerPath, strings.NewReader(`{"enabled":false}`))
+	req.Header.Set("Authorization", "Bearer admin-secret")
+	res = httptest.NewRecorder()
+	app.Handler().ServeHTTP(res, req)
+	if res.Code != http.StatusOK {
+		t.Fatalf("disable managed user status = %d body = %s", res.Code, res.Body.String())
+	}
+	if app.auth.Authenticate(sessionKey) != nil || app.auth.Authenticate(ownerAPIKey) != nil {
+		t.Fatal("disabled linuxdo user credentials still authenticate")
+	}
+	if app.auth.Authenticate(localKey) == nil {
+		t.Fatal("disabling linuxdo user should not affect local user")
+	}
+	disabledLoginItem, disabledLoginKey, err := app.auth.UpsertLinuxDoSession(owner)
+	if err != nil {
+		t.Fatalf("UpsertLinuxDoSession(disabled) error = %v", err)
+	}
+	if disabledLoginItem["enabled"] != false {
+		t.Fatalf("disabled linuxdo login item = %#v", disabledLoginItem)
+	}
+	if app.auth.Authenticate(disabledLoginKey) != nil {
+		t.Fatal("disabled linuxdo user authenticated after a new login")
+	}
+
+	req = httptest.NewRequest(http.MethodPost, ownerPath, strings.NewReader(`{"enabled":true}`))
+	req.Header.Set("Authorization", "Bearer admin-secret")
+	res = httptest.NewRecorder()
+	app.Handler().ServeHTTP(res, req)
+	if res.Code != http.StatusOK {
+		t.Fatalf("enable managed user status = %d body = %s", res.Code, res.Body.String())
+	}
+	if app.auth.Authenticate(disabledLoginKey) == nil || app.auth.Authenticate(ownerAPIKey) == nil {
+		t.Fatal("enabled linuxdo user credentials should authenticate")
+	}
+
+	req = httptest.NewRequest(http.MethodDelete, ownerPath, nil)
+	req.Header.Set("Authorization", "Bearer admin-secret")
+	res = httptest.NewRecorder()
+	app.Handler().ServeHTTP(res, req)
+	if res.Code != http.StatusOK {
+		t.Fatalf("delete managed user status = %d body = %s", res.Code, res.Body.String())
+	}
+	if app.auth.Authenticate(disabledLoginKey) != nil || app.auth.Authenticate(ownerAPIKey) != nil {
+		t.Fatal("deleted linuxdo user credentials still authenticate")
+	}
+	if app.auth.Authenticate(localKey) == nil {
+		t.Fatal("deleting linuxdo user should not affect local user")
+	}
+	if err := json.Unmarshal(res.Body.Bytes(), &list); err != nil {
+		t.Fatalf("delete managed user json: %v", err)
+	}
+	if findHTTPItem(logItems(list), owner.ID) != nil {
+		t.Fatalf("deleted linuxdo user still listed: %#v", list)
+	}
+}
+
 func TestLinuxDoOAuthCallbackCreatesSession(t *testing.T) {
 	oauthServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
@@ -583,6 +790,15 @@ func logItems(payload map[string]any) []map[string]any {
 		}
 	}
 	return items
+}
+
+func findHTTPItem(items []map[string]any, id string) map[string]any {
+	for _, item := range items {
+		if item["id"] == id {
+			return item
+		}
+	}
+	return nil
 }
 
 func newTestApp(t *testing.T) *App {
