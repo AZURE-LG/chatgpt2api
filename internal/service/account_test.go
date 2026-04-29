@@ -261,6 +261,88 @@ func TestRefreshAccountsMarksRateLimitedResponse(t *testing.T) {
 	}
 }
 
+func TestGetAvailableAccessTokenReservesKnownImageQuota(t *testing.T) {
+	accounts := newTestAccountService(t)
+	server := newAccountQuotaServer(t, map[string]any{
+		"email": "user@example.com",
+		"id":    "user-1",
+	}, []map[string]any{{
+		"feature_name": "image_gen",
+		"remaining":    1,
+	}})
+	defer server.Close()
+	accounts.remoteBaseURL = server.URL
+	accounts.browserHTTPClient = func(string, time.Duration) *http.Client {
+		return server.Client()
+	}
+	accounts.AddAccounts([]string{"token-1"})
+	accounts.UpdateAccount("token-1", map[string]any{"status": "正常", "quota": 1})
+
+	token, err := accounts.GetAvailableAccessToken(context.Background())
+	if err != nil {
+		t.Fatalf("first GetAvailableAccessToken() error = %v", err)
+	}
+	if token != "token-1" {
+		t.Fatalf("first token = %q, want token-1", token)
+	}
+
+	if token, err := accounts.GetAvailableAccessToken(context.Background()); err == nil {
+		t.Fatalf("second GetAvailableAccessToken() = %q, want no available image quota", token)
+	}
+
+	accounts.MarkImageResult("token-1", false)
+	token, err = accounts.GetAvailableAccessToken(context.Background())
+	if err != nil {
+		t.Fatalf("GetAvailableAccessToken() after failed result error = %v", err)
+	}
+	if token != "token-1" {
+		t.Fatalf("token after failed result = %q, want token-1", token)
+	}
+
+	accounts.MarkImageResult("token-1", true)
+	if token, err := accounts.GetAvailableAccessToken(context.Background()); err == nil {
+		t.Fatalf("GetAvailableAccessToken() after quota consumed = %q, want no available image quota", token)
+	}
+}
+
+func TestGetAvailableAccessTokenLimitsUnknownImageQuotaToOneInFlight(t *testing.T) {
+	accounts := newTestAccountService(t)
+	server := newAccountQuotaServer(t, map[string]any{
+		"email":     "plus@example.com",
+		"id":        "user-1",
+		"plan_type": "plus",
+	}, nil)
+	defer server.Close()
+	accounts.remoteBaseURL = server.URL
+	accounts.browserHTTPClient = func(string, time.Duration) *http.Client {
+		return server.Client()
+	}
+	accounts.AddAccounts([]string{"token-1"})
+	accounts.UpdateAccount("token-1", map[string]any{"status": "正常", "quota": 0, "image_quota_unknown": true, "type": "Plus"})
+
+	token, err := accounts.GetAvailableAccessToken(context.Background())
+	if err != nil {
+		t.Fatalf("first GetAvailableAccessToken() error = %v", err)
+	}
+	if token != "token-1" {
+		t.Fatalf("first token = %q, want token-1", token)
+	}
+
+	if token, err := accounts.GetAvailableAccessToken(context.Background()); err == nil {
+		t.Fatalf("second GetAvailableAccessToken() = %q, want no available image quota", token)
+	}
+
+	accounts.MarkImageResult("token-1", false)
+	token, err = accounts.GetAvailableAccessToken(context.Background())
+	if err != nil {
+		t.Fatalf("GetAvailableAccessToken() after release error = %v", err)
+	}
+	if token != "token-1" {
+		t.Fatalf("token after release = %q, want token-1", token)
+	}
+	accounts.MarkImageResult("token-1", false)
+}
+
 func TestApplyAccountErrorMessageDetectsImageStreamFailures(t *testing.T) {
 	accounts := newTestAccountService(t)
 	accounts.AddAccounts([]string{"token-invalid", "token-limited"})
@@ -308,6 +390,27 @@ func newTestAccountService(t *testing.T) *AccountService {
 		NewProxyService(testAccountConfig{}),
 		NewLogService(dir),
 	)
+}
+
+func newAccountQuotaServer(t *testing.T, mePayload map[string]any, limits []map[string]any) *httptest.Server {
+	t.Helper()
+	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/":
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte("<html>ok</html>"))
+		case "/backend-api/me":
+			writeJSON(t, w, mePayload)
+		case "/backend-api/conversation/init":
+			payload := map[string]any{"default_model_slug": "gpt-5"}
+			if limits != nil {
+				payload["limits_progress"] = limits
+			}
+			writeJSON(t, w, payload)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
 }
 
 func writeJSON(t *testing.T, w http.ResponseWriter, payload any) {

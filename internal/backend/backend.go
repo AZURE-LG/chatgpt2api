@@ -115,7 +115,7 @@ func (c *Client) ListModels(ctx context.Context) (map[string]any, error) {
 	}
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
-		return nil, err
+		return nil, upstreamTransportError(contextName, err)
 	}
 	defer resp.Body.Close()
 	if err := ensureOK(resp, contextName); err != nil {
@@ -243,7 +243,11 @@ func (c *Client) downloadImageBytesResponse(ctx context.Context, rawURL string) 
 		for key, value := range c.headers(path, map[string]string{"Accept": "image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8"}) {
 			req.Header.Set(key, value)
 		}
-		return c.httpClient.Do(req)
+		resp, err := c.httpClient.Do(req)
+		if err != nil {
+			return nil, upstreamTransportError(path, err)
+		}
+		return resp, nil
 	}
 
 	if c.userAgent != "" {
@@ -492,7 +496,7 @@ func (c *Client) bootstrap(ctx context.Context) error {
 	}
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
-		return err
+		return upstreamTransportError("bootstrap", err)
 	}
 	defer resp.Body.Close()
 	data, _ := io.ReadAll(resp.Body)
@@ -631,13 +635,16 @@ func (c *Client) imageHeaders(path string, reqs ChatRequirements, conduitToken, 
 
 func (c *Client) imageModelSlug(model string) string {
 	model = strings.TrimSpace(model)
-	if model == "" {
+	if model == "" || model == util.ImageModelAuto {
 		return "auto"
 	}
 	if model == util.ImageModelGPT {
 		return "gpt-5-3"
 	}
 	if model == CodexImageModel {
+		return model
+	}
+	if util.IsImageGenerationModel(model) {
 		return model
 	}
 	return "auto"
@@ -703,7 +710,7 @@ func (c *Client) uploadImage(ctx context.Context, imageRef, fileName string) (Up
 	}
 	putResp, err := c.httpClient.Do(req)
 	if err != nil {
-		return UploadedFile{}, err
+		return UploadedFile{}, upstreamTransportError("image_upload", err)
 	}
 	if err := ensureOKAndClose(putResp, "image_upload"); err != nil {
 		return UploadedFile{}, err
@@ -765,7 +772,7 @@ func (c *Client) getConversation(ctx context.Context, conversationID string) (ma
 	}
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
-		return nil, err
+		return nil, upstreamTransportError(path, err)
 	}
 	return readJSONResponse(resp, path)
 }
@@ -862,7 +869,11 @@ func (c *Client) postRaw(ctx context.Context, path string, data []byte, headers 
 	for key, value := range headers {
 		req.Header.Set(key, value)
 	}
-	return c.httpClient.Do(req)
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return nil, upstreamTransportError(path, err)
+	}
+	return resp, nil
 }
 
 func ensureOK(resp *http.Response, context string) error {
@@ -897,6 +908,16 @@ func upstreamHTTPError(context string, status int, body []byte) error {
 		return fmt.Errorf("%s failed: status=%d", context, status)
 	}
 	return fmt.Errorf("%s failed: status=%d, %s", context, status, detail)
+}
+
+func upstreamTransportError(context string, err error) error {
+	if err == nil {
+		return nil
+	}
+	if detail, ok := util.SummarizeUpstreamConnectionError(err.Error()); ok {
+		return fmt.Errorf("%s failed: %s", context, detail)
+	}
+	return fmt.Errorf("%s failed: %w", context, err)
 }
 
 func summarizeUpstreamErrorBody(body []byte) string {

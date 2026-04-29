@@ -17,13 +17,40 @@ import (
 )
 
 const (
-	ImageModelGPT   = "gpt-image-2"
-	ImageModelCodex = "codex-gpt-image-2"
+	ImageModelAuto      = "auto"
+	ImageModelGPT       = "gpt-image-2"
+	ImageModelCodex     = "codex-gpt-image-2"
+	ImageModelGPT5      = "gpt-5"
+	ImageModelGPT51     = "gpt-5-1"
+	ImageModelGPT52     = "gpt-5-2"
+	ImageModelGPT53     = "gpt-5-3"
+	ImageModelGPT53Mini = "gpt-5-3-mini"
+	ImageModelGPTMini   = "gpt-5-mini"
 )
 
 var ImageModels = map[string]struct{}{
 	ImageModelGPT:   {},
 	ImageModelCodex: {},
+}
+
+var ImageGenerationModelIDs = []string{
+	ImageModelGPT,
+	ImageModelCodex,
+	ImageModelAuto,
+	ImageModelGPT5,
+	ImageModelGPT51,
+	ImageModelGPT52,
+	ImageModelGPT53,
+	ImageModelGPT53Mini,
+	ImageModelGPTMini,
+}
+
+var ImageGenerationModels = map[string]struct{}{}
+
+func init() {
+	for _, model := range ImageGenerationModelIDs {
+		ImageGenerationModels[model] = struct{}{}
+	}
 }
 
 func Clean(v any) string {
@@ -238,4 +265,17 @@ func ParseCommaList(value string) []string {
 func IsImageModel(model string) bool {
 	_, ok := ImageModels[strings.TrimSpace(model)]
 	return ok
+}
+
+func IsImageGenerationModel(model string) bool {
+	_, ok := ImageGenerationModels[strings.TrimSpace(model)]
+	return ok
+}
+
+func ImageGenerationModelList() []string {
+	return append([]string(nil), ImageGenerationModelIDs...)
+}
+
+func ImageGenerationModelNames() string {
+	return strings.Join(ImageGenerationModelIDs, ", ")
 }

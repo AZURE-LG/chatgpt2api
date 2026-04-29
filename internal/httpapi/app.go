@@ -74,6 +74,7 @@ func NewApp() (*App, error) {
 			})
 		},
 		cfg.ImageRetentionDays,
+		cfg.ImageConcurrentLimit,
 	)
 	accounts.StartLimitedWatcher(ctx, time.Duration(cfg.RefreshAccountIntervalMinute())*time.Minute)
 	cfg.CleanupOldImages()
@@ -175,8 +176,9 @@ func (a *App) handleImageGenerations(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	body["base_url"] = a.resolveImageBaseURL(r)
+	model := firstNonEmpty(util.Clean(body["model"]), util.ImageModelAuto)
 	result, stream, err := a.engine.HandleImageGenerations(r.Context(), body)
-	a.writeProtocol(w, r, result, stream, err, "openai", "/v1/images/generations", util.Clean(body["model"]), identity, "文生图")
+	a.writeProtocol(w, r, result, stream, err, "openai", "/v1/images/generations", model, identity, "文生图")
 }
 
 func (a *App) handleImageEdits(w http.ResponseWriter, r *http.Request) {
@@ -198,8 +200,9 @@ func (a *App) handleImageEdits(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	body["base_url"] = a.resolveImageBaseURL(r)
+	model := firstNonEmpty(util.Clean(body["model"]), util.ImageModelAuto)
 	result, stream, err := a.engine.HandleImageEdits(r.Context(), body, images)
-	a.writeProtocol(w, r, result, stream, err, "openai", "/v1/images/edits", util.Clean(body["model"]), identity, "图生图")
+	a.writeProtocol(w, r, result, stream, err, "openai", "/v1/images/edits", model, identity, "图生图")
 }
 
 func (a *App) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
@@ -492,7 +495,7 @@ func readMultipartImageBody(r *http.Request) (map[string]any, []protocol.Uploade
 	body := map[string]any{
 		"client_task_id":  firstForm(r.MultipartForm, "client_task_id"),
 		"prompt":          firstForm(r.MultipartForm, "prompt"),
-		"model":           firstNonEmpty(firstForm(r.MultipartForm, "model"), "gpt-image-2"),
+		"model":           firstNonEmpty(firstForm(r.MultipartForm, "model"), util.ImageModelAuto),
 		"n":               util.ToInt(firstForm(r.MultipartForm, "n"), 1),
 		"size":            firstForm(r.MultipartForm, "size"),
 		"response_format": firstNonEmpty(firstForm(r.MultipartForm, "response_format"), "b64_json"),
@@ -585,7 +588,7 @@ func addIdentityLogDetail(detail map[string]any, identity service.Identity) {
 
 func (a *App) runLoggedImageTask(ctx context.Context, identity service.Identity, payload map[string]any, endpoint, summary string, run func(context.Context, map[string]any) (map[string]any, error)) (map[string]any, error) {
 	start := time.Now()
-	model := util.Clean(payload["model"])
+	model := firstNonEmpty(util.Clean(payload["model"]), util.ImageModelAuto)
 	result, err := run(ctx, payload)
 	if err != nil {
 		a.logCall(identity, summary, endpoint, model, start, "failed", err.Error(), nil)

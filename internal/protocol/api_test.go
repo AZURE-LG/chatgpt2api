@@ -22,12 +22,15 @@ func TestChatAndResponsesImageParsing(t *testing.T) {
 		"n": 2,
 	}
 
-	model, prompt, n, images, err := ChatImageArgs(body)
+	model, prompt, n, images, messages, err := ChatImageArgs(body)
 	if err != nil {
 		t.Fatalf("ChatImageArgs() error = %v", err)
 	}
 	if model != "gpt-image-2" || prompt != "画一张图" || n != 2 {
 		t.Fatalf("ChatImageArgs() = model %q prompt %q n %d", model, prompt, n)
+	}
+	if len(messages) != 2 || messages[1]["content"] != "画一张图" {
+		t.Fatalf("messages = %#v", messages)
 	}
 	if len(images) != 1 || string(images[0].Data) != "png-bytes" || images[0].ContentType != "image/png" {
 		t.Fatalf("images = %#v", images)
@@ -44,6 +47,72 @@ func TestChatAndResponsesImageParsing(t *testing.T) {
 	}
 	if image := ExtractResponseImage(responseInput); image == nil || string(image.Data) != "png-bytes" {
 		t.Fatalf("ExtractResponseImage() = %#v", image)
+	}
+}
+
+func TestImageRequestDefaultsToAutoModel(t *testing.T) {
+	body := map[string]any{
+		"messages": []any{
+			map[string]any{"role": "user", "content": "画一张图"},
+		},
+	}
+	model, prompt, n, _, _, err := ChatImageArgs(body)
+	if err != nil {
+		t.Fatalf("ChatImageArgs() error = %v", err)
+	}
+	if model != "auto" || prompt != "画一张图" || n != 1 {
+		t.Fatalf("ChatImageArgs() = model %q prompt %q n %d", model, prompt, n)
+	}
+}
+
+func TestTextModelDoesNotForceImageChatRoute(t *testing.T) {
+	if IsImageChatRequest(map[string]any{"model": "gpt-5", "messages": []any{map[string]any{"role": "user", "content": "hello"}}}) {
+		t.Fatal("gpt-5 text chat should not be routed as an image request without image modality")
+	}
+	if !IsImageChatRequest(map[string]any{"model": "gpt-5", "modalities": []any{"image"}, "messages": []any{map[string]any{"role": "user", "content": "draw"}}}) {
+		t.Fatal("gpt-5 with image modality should be routed as an image request")
+	}
+}
+
+func TestImageContextPromptIncludesHistory(t *testing.T) {
+	messages := []map[string]any{
+		{"role": "system", "content": "保持水彩风格"},
+		{"role": "user", "content": "画一只白猫"},
+		{"role": "assistant", "content": "Generated image: 白猫坐在窗边"},
+		{"role": "user", "content": "把它改成夜晚"},
+	}
+	prompt := BuildImageContextPrompt(messages, LatestUserPrompt(messages), "1:1")
+	for _, want := range []string{"保持水彩风格", "画一只白猫", "白猫坐在窗边", "当前请求:\n把它改成夜晚", "输出为 1:1"} {
+		if !strings.Contains(prompt, want) {
+			t.Fatalf("context prompt missing %q: %s", want, prompt)
+		}
+	}
+}
+
+func TestResponsesInputKeepsAssistantAndGeneratedImageContext(t *testing.T) {
+	imageData := base64.StdEncoding.EncodeToString([]byte("previous-image"))
+	input := []any{
+		map[string]any{"type": "message", "role": "assistant", "content": []any{
+			map[string]any{"type": "output_text", "text": "上一轮说明"},
+		}},
+		map[string]any{"type": "image_generation_call", "status": "completed", "result": imageData, "revised_prompt": "一只红色猫"},
+		map[string]any{"role": "user", "content": []any{
+			map[string]any{"type": "input_text", "text": "把它改成蓝色"},
+		}},
+	}
+	messages := MessagesFromInput(input, "保持同一角色")
+	if len(messages) != 4 {
+		t.Fatalf("MessagesFromInput() = %#v", messages)
+	}
+	if messages[0]["role"] != "system" || messages[1]["role"] != "assistant" || messages[2]["role"] != "assistant" || messages[3]["role"] != "user" {
+		t.Fatalf("unexpected message roles: %#v", messages)
+	}
+	if got := LatestUserPrompt(messages); got != "把它改成蓝色" {
+		t.Fatalf("LatestUserPrompt() = %q", got)
+	}
+	images := ExtractResponseImages(input)
+	if len(images) != 1 || string(images[0].Data) != "previous-image" {
+		t.Fatalf("ExtractResponseImages() = %#v", images)
 	}
 }
 

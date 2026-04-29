@@ -1,10 +1,9 @@
 "use client";
 
-import { useEffect, useState } from "react";
-import { Check, Clock3, LoaderCircle, PencilLine, RotateCcw, Sparkles, X } from "lucide-react";
+import { useState } from "react";
+import { CircleStop, Clock3, LoaderCircle, PencilLine, RotateCcw, Sparkles } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
-import { Textarea } from "@/components/ui/textarea";
 import { cn } from "@/lib/utils";
 import type { ImageConversation, ImageTurn, ImageTurnStatus, StoredImage, StoredReferenceImage } from "@/store/image-conversations";
 
@@ -19,7 +18,8 @@ type ImageResultsProps = {
   selectedConversation: ImageConversation | null;
   onOpenLightbox: (images: ImageLightboxItem[], index: number) => void;
   onContinueEdit: (conversationId: string, image: StoredImage | StoredReferenceImage) => void;
-  onUpdateTurnPrompt: (conversationId: string, turnId: string, prompt: string) => void | Promise<void>;
+  onEditTurn: (conversationId: string, turnId: string) => void;
+  onCancelTurn: (conversationId: string, turnId: string) => void | Promise<void>;
   onRegenerateTurn: (conversationId: string, turnId: string) => void | Promise<void>;
   formatConversationTime: (value: string) => string;
 };
@@ -43,12 +43,12 @@ export function ImageResults({
   selectedConversation,
   onOpenLightbox,
   onContinueEdit,
-  onUpdateTurnPrompt,
+  onEditTurn,
+  onCancelTurn,
   onRegenerateTurn,
   formatConversationTime,
 }: ImageResultsProps) {
   const [imageDimensions, setImageDimensions] = useState<Record<string, string>>({});
-  const [editingPrompt, setEditingPrompt] = useState<{ turnId: string; value: string } | null>(null);
 
   const updateImageDimensions = (id: string, width: number, height: number) => {
     const dimensions = formatImageDimensions(width, height);
@@ -59,10 +59,6 @@ export function ImageResults({
       return { ...current, [id]: dimensions };
     });
   };
-
-  useEffect(() => {
-    setEditingPrompt(null);
-  }, [selectedConversation?.id]);
 
   if (!selectedConversation) {
     return (
@@ -110,8 +106,11 @@ export function ImageResults({
             : [];
         });
         const turnBusy = isTurnBusy(turn);
-        const isEditingPrompt = editingPrompt?.turnId === turn.id;
-        const editedPromptValue = isEditingPrompt ? editingPrompt.value : turn.prompt;
+        const successCount = turn.images.filter((image) => image.status === "success").length;
+        const failedCount = turn.images.filter((image) => image.status === "error").length;
+        const cancelledCount = turn.images.filter((image) => image.status === "cancelled").length;
+        const resultCount = turn.images.length || turn.count;
+        const outcomeLabel = getTurnOutcomeLabel(successCount, failedCount, cancelledCount);
 
         return (
           <div key={turn.id} className="flex flex-col gap-3 sm:gap-4">
@@ -121,46 +120,25 @@ export function ImageResults({
                   <div className="flex min-w-0 flex-wrap items-center gap-1.5 text-[11px] leading-5 text-stone-500">
                     <span className="rounded-full bg-stone-100 px-2.5 py-0.5 text-stone-600">第 {turnIndex + 1} 轮</span>
                     <span className="rounded-full bg-stone-100 px-2.5 py-0.5 text-stone-600">{getTurnModeLabel(turn)}</span>
+                    <span className="rounded-full bg-stone-100 px-2.5 py-0.5 text-stone-600">{turn.model}</span>
                     <span className="rounded-full bg-stone-100 px-2.5 py-0.5 text-stone-600">
                       {getTurnStatusLabel(turn.status)}
                     </span>
                     <span className="px-1 text-stone-400">{formatConversationTime(turn.createdAt)}</span>
                   </div>
                   <div className="flex shrink-0 items-center gap-1">
-                    {isEditingPrompt ? (
-                      <>
-                        <Button
-                          type="button"
-                          variant="outline"
-                          size="icon"
-                          className="size-8 rounded-full border-stone-200 bg-white text-stone-600 shadow-none hover:bg-stone-50"
-                          onClick={() => setEditingPrompt(null)}
-                          aria-label="取消编辑"
-                          title="取消"
-                        >
-                          <X className="size-4" />
-                        </Button>
-                        <Button
-                          type="button"
-                          size="icon"
-                          className="size-8 rounded-full bg-stone-950 text-white shadow-none hover:bg-stone-800"
-                          disabled={!editedPromptValue.trim()}
-                          onClick={async () => {
-                            const nextPrompt = editedPromptValue.trim();
-                            if (!nextPrompt) {
-                              return;
-                            }
-                            if (nextPrompt !== turn.prompt.trim()) {
-                              await onUpdateTurnPrompt(selectedConversation.id, turn.id, nextPrompt);
-                            }
-                            setEditingPrompt(null);
-                          }}
-                          aria-label="保存提示词"
-                          title="保存"
-                        >
-                          <Check className="size-4" />
-                        </Button>
-                      </>
+                    {turnBusy ? (
+                      <Button
+                        type="button"
+                        variant="outline"
+                        size="icon"
+                        className="size-8 rounded-full border-amber-200 bg-amber-50 text-amber-700 shadow-none hover:bg-amber-100"
+                        onClick={() => void onCancelTurn(selectedConversation.id, turn.id)}
+                        aria-label="终止生成任务"
+                        title="终止"
+                      >
+                        <CircleStop className="size-4" />
+                      </Button>
                     ) : (
                       <>
                         <Button
@@ -168,9 +146,8 @@ export function ImageResults({
                           variant="outline"
                           size="icon"
                           className="size-8 rounded-full border-stone-200 bg-white text-stone-600 shadow-none hover:bg-stone-50"
-                          disabled={turnBusy}
-                          onClick={() => setEditingPrompt({ turnId: turn.id, value: turn.prompt })}
-                          aria-label="编辑提示词"
+                          onClick={() => onEditTurn(selectedConversation.id, turn.id)}
+                          aria-label="编辑生成设置"
                           title="编辑"
                         >
                           <PencilLine className="size-4" />
@@ -192,21 +169,7 @@ export function ImageResults({
                   </div>
                 </div>
                 <div>
-                  {isEditingPrompt ? (
-                    <Textarea
-                      value={editedPromptValue}
-                      onChange={(event) =>
-                        setEditingPrompt({
-                          turnId: turn.id,
-                          value: event.target.value,
-                        })
-                      }
-                      className="min-h-[96px] resize-y rounded-2xl border-stone-200 bg-white px-3 py-2 text-left text-[14px] leading-6 text-stone-900 shadow-none focus-visible:ring-stone-300 sm:text-[15px] sm:leading-7"
-                      autoFocus
-                    />
-                  ) : (
-                    <div className="whitespace-pre-wrap break-words">{turn.prompt}</div>
-                  )}
+                  <div className="whitespace-pre-wrap break-words">{turn.prompt}</div>
                   {turn.referenceImages.length > 0 ? (
                     <div className="mt-3 flex flex-wrap justify-start gap-2">
                       {turn.referenceImages.map((image, index) => (
@@ -235,8 +198,12 @@ export function ImageResults({
                 <div className="mb-3 flex flex-col gap-2 sm:mb-4 sm:flex-row sm:items-center sm:justify-between">
                   <div className="flex flex-wrap items-center gap-1.5 text-[11px] text-stone-500 sm:gap-2 sm:text-xs">
                     <span className="font-medium text-stone-700">生成结果</span>
-                    <span className="rounded-full bg-stone-100 px-3 py-1">{turn.count} 张</span>
+                    <span className="rounded-full bg-stone-100 px-3 py-1">{resultCount} 张</span>
+                    {turn.count !== resultCount ? (
+                      <span className="rounded-full bg-stone-100 px-3 py-1">目标 {turn.count} 张</span>
+                    ) : null}
                     {turn.size ? <span className="rounded-full bg-stone-100 px-3 py-1">{turn.size}</span> : null}
+                    {outcomeLabel ? <span className="rounded-full bg-stone-100 px-3 py-1">{outcomeLabel}</span> : null}
                     <span className={cn("rounded-full px-3 py-1", getStatusChipClass(turn.status))}>
                       {getTurnStatusLabel(turn.status)}
                     </span>
@@ -299,6 +266,19 @@ export function ImageResults({
                       );
                     }
 
+                    if (image.status === "cancelled") {
+                      return (
+                        <div
+                          key={image.id}
+                          className="min-h-[180px] overflow-hidden rounded-[18px] border border-amber-200 bg-amber-50"
+                        >
+                          <div className="flex h-full min-h-16 items-center justify-center px-4 py-4 text-center text-sm leading-6 text-amber-700 sm:px-6 sm:py-8">
+                            {image.error || "任务已终止"}
+                          </div>
+                        </div>
+                      );
+                    }
+
                     if (image.status === "error") {
                       return (
                         <div
@@ -356,6 +336,9 @@ function getTurnStatusLabel(status: ImageTurnStatus) {
   if (status === "success") {
     return "已完成";
   }
+  if (status === "cancelled") {
+    return "已终止";
+  }
   return "失败";
 }
 
@@ -369,7 +352,24 @@ function getStatusChipClass(status: ImageTurnStatus) {
   if (status === "success") {
     return "bg-emerald-50 text-emerald-700";
   }
+  if (status === "cancelled") {
+    return "bg-amber-50 text-amber-700";
+  }
   return "bg-rose-50 text-rose-700";
+}
+
+function getTurnOutcomeLabel(successCount: number, failedCount: number, cancelledCount: number) {
+  if (failedCount === 0 && cancelledCount === 0) {
+    return "";
+  }
+  const parts = [`成功 ${successCount}`];
+  if (failedCount > 0) {
+    parts.push(`失败 ${failedCount}`);
+  }
+  if (cancelledCount > 0) {
+    parts.push(`终止 ${cancelledCount}`);
+  }
+  return parts.join(" / ");
 }
 
 function getTurnModeLabel(turn: ImageTurn) {

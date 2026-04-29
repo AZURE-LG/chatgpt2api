@@ -27,7 +27,7 @@ func (e *Engine) HandleImageGenerations(ctx context.Context, body map[string]any
 	if prompt == "" {
 		return nil, nil, HTTPError{Status: 400, Message: "prompt is required"}
 	}
-	model := firstNonEmpty(util.Clean(body["model"]), util.ImageModelGPT)
+	model := firstNonEmpty(util.Clean(body["model"]), util.ImageModelAuto)
 	n, err := ParseImageCount(body["n"])
 	if err != nil {
 		return nil, nil, err
@@ -51,7 +51,7 @@ func (e *Engine) HandleImageEdits(ctx context.Context, body map[string]any, imag
 	}
 	request := ConversationRequest{
 		Prompt:         util.Clean(body["prompt"]),
-		Model:          firstNonEmpty(util.Clean(body["model"]), util.ImageModelGPT),
+		Model:          firstNonEmpty(util.Clean(body["model"]), util.ImageModelAuto),
 		N:              util.ToInt(body["n"], 1),
 		Size:           util.Clean(body["size"]),
 		ResponseFormat: firstNonEmpty(util.Clean(body["response_format"]), "b64_json"),
@@ -196,11 +196,11 @@ func IsImageChatRequest(body map[string]any) bool {
 }
 
 func (e *Engine) ImageChatResponse(ctx context.Context, body map[string]any) (map[string]any, *StreamResult, error) {
-	model, prompt, n, images, err := ChatImageArgs(body)
+	model, prompt, n, images, messages, err := ChatImageArgs(body)
 	if err != nil {
 		return nil, nil, err
 	}
-	outputs, errCh := e.StreamImageOutputsWithPool(ctx, ConversationRequest{Prompt: prompt, Model: model, N: n, ResponseFormat: "b64_json", Images: EncodeImages(images)})
+	outputs, errCh := e.StreamImageOutputsWithPool(ctx, ConversationRequest{Prompt: prompt, Model: model, Messages: messages, N: n, ResponseFormat: "b64_json", Images: EncodeImages(images)})
 	result, err := e.CollectImageOutputs(outputs, errCh)
 	if err != nil {
 		return nil, nil, err
@@ -214,12 +214,12 @@ func (e *Engine) ImageChatEvents(ctx context.Context, body map[string]any) (<-ch
 	go func() {
 		defer close(out)
 		defer close(errOut)
-		model, prompt, n, images, err := ChatImageArgs(body)
+		model, prompt, n, images, messages, err := ChatImageArgs(body)
 		if err != nil {
 			errOut <- err
 			return
 		}
-		outputs, errCh := e.StreamImageOutputsWithPool(ctx, ConversationRequest{Prompt: prompt, Model: model, N: n, ResponseFormat: "b64_json", Images: EncodeImages(images)})
+		outputs, errCh := e.StreamImageOutputsWithPool(ctx, ConversationRequest{Prompt: prompt, Model: model, Messages: messages, N: n, ResponseFormat: "b64_json", Images: EncodeImages(images)})
 		id := "chatcmpl-" + util.NewHex(32)
 		created := time.Now().Unix()
 		sentRole := false
@@ -259,18 +259,26 @@ func (e *Engine) ImageChatEvents(ctx context.Context, body map[string]any) (<-ch
 	return out, errOut
 }
 
-func ChatImageArgs(body map[string]any) (string, string, int, []UploadedImage, error) {
-	model := firstNonEmpty(util.Clean(body["model"]), util.ImageModelGPT)
-	prompt := ExtractChatPrompt(body)
+func ChatImageArgs(body map[string]any) (string, string, int, []UploadedImage, []map[string]any, error) {
+	model := firstNonEmpty(util.Clean(body["model"]), util.ImageModelAuto)
+	rawMessages, err := ChatMessagesFromBody(body)
+	if err != nil {
+		return "", "", 0, nil, nil, err
+	}
+	messages := NormalizeMessages(rawMessages, nil)
+	prompt := LatestUserPrompt(messages)
 	if prompt == "" {
-		return "", "", 0, nil, HTTPError{Status: 400, Message: "prompt is required"}
+		prompt = ExtractChatPrompt(body)
+	}
+	if prompt == "" {
+		return "", "", 0, nil, nil, HTTPError{Status: 400, Message: "prompt is required"}
 	}
 	n, err := ParseImageCount(body["n"])
 	if err != nil {
-		return "", "", 0, nil, err
+		return "", "", 0, nil, nil, err
 	}
-	images := ExtractChatImages(body)
-	return model, prompt, n, images, nil
+	images := ExtractChatContextImages(body)
+	return model, prompt, n, images, messages, nil
 }
 
 func ImageResultContent(result map[string]any) string {
@@ -306,16 +314,19 @@ func ExtractChatPrompt(body map[string]any) string {
 	if prompt := strings.TrimSpace(util.Clean(body["prompt"])); prompt != "" {
 		return prompt
 	}
-	var parts []string
+	messages := NormalizeMessages(util.AsMapSlice(body["messages"]), nil)
+	if prompt := LatestUserPrompt(messages); prompt != "" {
+		return prompt
+	}
 	for _, message := range util.AsMapSlice(body["messages"]) {
 		if strings.ToLower(util.Clean(message["role"])) != "user" {
 			continue
 		}
 		if prompt := ExtractPromptFromMessageContent(message["content"]); prompt != "" {
-			parts = append(parts, prompt)
+			return prompt
 		}
 	}
-	return strings.TrimSpace(strings.Join(parts, "\n"))
+	return ""
 }
 
 func ExtractChatImages(body map[string]any) []UploadedImage {
@@ -330,6 +341,17 @@ func ExtractChatImages(body map[string]any) []UploadedImage {
 		}
 	}
 	return nil
+}
+
+func ExtractChatContextImages(body map[string]any) []UploadedImage {
+	var images []UploadedImage
+	for _, message := range util.AsMapSlice(body["messages"]) {
+		images = append(images, ExtractImagesFromMessageContent(message["content"])...)
+	}
+	if len(images) > maxContextImages {
+		images = images[len(images)-maxContextImages:]
+	}
+	return images
 }
 
 func ExtractPromptFromMessageContent(content any) string {
@@ -357,6 +379,9 @@ func ExtractPromptFromMessageContent(content any) string {
 }
 
 func ExtractImagesFromMessageContent(content any) []UploadedImage {
+	if text, ok := content.(string); ok {
+		return ExtractImagesFromText(text)
+	}
 	var images []UploadedImage
 	for _, raw := range anyList(content) {
 		item, ok := raw.(map[string]any)
@@ -382,6 +407,21 @@ func ExtractImagesFromMessageContent(content any) []UploadedImage {
 			if err == nil {
 				images = append(images, UploadedImage{Data: bytes, Filename: "image.png", ContentType: firstNonEmpty(mime, "image/png")})
 			}
+		}
+	}
+	return images
+}
+
+func ExtractImagesFromText(text string) []UploadedImage {
+	var images []UploadedImage
+	re := regexp.MustCompile(`data:(image/[A-Za-z0-9.+-]+);base64,([A-Za-z0-9+/=]+)`)
+	for _, match := range re.FindAllStringSubmatch(text, -1) {
+		if len(match) < 3 {
+			continue
+		}
+		bytes, err := base64.StdEncoding.DecodeString(match[2])
+		if err == nil {
+			images = append(images, UploadedImage{Data: bytes, Filename: "image.png", ContentType: firstNonEmpty(match[1], "image/png")})
 		}
 	}
 	return images
@@ -413,29 +453,55 @@ func (e *Engine) HandleResponses(ctx context.Context, body map[string]any) (map[
 }
 
 func (e *Engine) ResponseEvents(ctx context.Context, body map[string]any) (<-chan map[string]any, <-chan error, error) {
+	previous, err := e.responseContextFromPrevious(body["previous_response_id"])
+	if err != nil {
+		return nil, nil, err
+	}
+	responseModel := firstNonEmpty(util.Clean(body["model"]), "auto")
+	currentMessages := MessagesFromInput(body["input"], body["instructions"])
+	baseContext := MergeResponseContext(previous, currentMessages, nil)
 	if !HasResponseImageGenerationTool(body) {
-		events, errCh := e.StreamTextResponse(ctx, body)
+		events, errCh := e.StreamTextResponseWithMessages(ctx, responseModel, baseContext.Messages)
+		events = e.rememberResponseContextEvents(events, baseContext)
 		return events, errCh, nil
 	}
-	prompt := ExtractResponsePrompt(body["input"])
+	prompt := LatestUserPrompt(baseContext.Messages)
 	if prompt == "" {
 		return nil, nil, HTTPError{Status: 400, Message: "input text is required"}
 	}
-	model := firstNonEmpty(util.Clean(body["model"]), util.ImageModelGPT)
-	var images []string
+	n, err := ParseImageCount(body["n"])
+	if err != nil {
+		return nil, nil, err
+	}
+	imageModel := util.ImageModelAuto
+	if util.IsImageGenerationModel(responseModel) {
+		imageModel = responseModel
+	}
+	images := append([]string(nil), previous.Images...)
+	var currentImages []string
 	size := "1:1"
-	if imageInfo := ExtractResponseImage(body["input"]); imageInfo != nil {
-		images = EncodeImages([]UploadedImage{*imageInfo})
+	if inputImages := ExtractResponseImages(body["input"]); len(inputImages) > 0 {
+		currentImages = EncodeImages(inputImages)
+		images = append(images, currentImages...)
 		size = ""
 	}
-	outputs, errCh := e.StreamImageOutputsWithPool(ctx, ConversationRequest{Prompt: prompt, Model: model, Size: size, ResponseFormat: "b64_json", Images: images})
-	events, responseErr := StreamImageResponse(outputs, prompt, model)
+	if len(images) > maxContextImages {
+		images = images[len(images)-maxContextImages:]
+	}
+	baseContext = MergeResponseContext(previous, currentMessages, currentImages)
+	outputs, errCh := e.StreamImageOutputsWithPool(ctx, ConversationRequest{Prompt: prompt, Model: imageModel, Messages: baseContext.Messages, N: n, Size: size, ResponseFormat: "b64_json", Images: images})
+	events, responseErr := StreamImageResponse(outputs, prompt, responseModel)
+	events = e.rememberResponseContextEvents(events, baseContext)
 	return events, combineErrorChannels(errCh, responseErr), nil
 }
 
 func (e *Engine) StreamTextResponse(ctx context.Context, body map[string]any) (<-chan map[string]any, <-chan error) {
 	model := firstNonEmpty(util.Clean(body["model"]), "auto")
 	messages := MessagesFromInput(body["input"], body["instructions"])
+	return e.StreamTextResponseWithMessages(ctx, model, messages)
+}
+
+func (e *Engine) StreamTextResponseWithMessages(ctx context.Context, model string, messages []map[string]any) (<-chan map[string]any, <-chan error) {
 	deltas, errCh := e.StreamTextDeltas(ctx, e.TextBackend(e.Accounts.GetTextAccessToken()), ConversationRequest{Model: model, Messages: messages})
 	return streamTextResponseEvents(ctx, model, deltas, errCh)
 }
@@ -593,67 +659,57 @@ func HasResponseImageGenerationTool(body map[string]any) bool {
 }
 
 func ExtractResponsePrompt(input any) string {
-	if text, ok := input.(string); ok {
-		return strings.TrimSpace(text)
-	}
-	if item, ok := input.(map[string]any); ok {
-		role := strings.ToLower(util.Clean(item["role"]))
-		if role != "" && role != "user" {
-			return ""
-		}
-		return ExtractPromptFromMessageContent(item["content"])
-	}
-	var parts []string
-	for _, raw := range anyList(input) {
-		item, ok := raw.(map[string]any)
-		if !ok {
-			continue
-		}
-		if util.Clean(item["type"]) == "input_text" {
-			if text := strings.TrimSpace(util.Clean(item["text"])); text != "" {
-				parts = append(parts, text)
-			}
-			continue
-		}
-		role := strings.ToLower(util.Clean(item["role"]))
-		if role != "" && role != "user" {
-			continue
-		}
-		if prompt := ExtractPromptFromMessageContent(item["content"]); prompt != "" {
-			parts = append(parts, prompt)
-		}
-	}
-	return strings.TrimSpace(strings.Join(parts, "\n"))
+	return LatestUserPrompt(responseInputMessages(input))
 }
 
 func ExtractResponseImage(input any) *UploadedImage {
-	if item, ok := input.(map[string]any); ok {
-		images := ExtractImagesFromMessageContent(item["content"])
-		if len(images) > 0 {
-			return &images[0]
-		}
+	images := ExtractResponseImages(input)
+	if len(images) == 0 {
+		return nil
 	}
-	list := anyList(input)
-	for i := len(list) - 1; i >= 0; i-- {
-		item, ok := list[i].(map[string]any)
-		if !ok {
-			continue
+	return &images[0]
+}
+
+func ExtractResponseImages(input any) []UploadedImage {
+	var images []UploadedImage
+	var walk func(any)
+	walk = func(value any) {
+		if text, ok := value.(string); ok {
+			images = append(images, ExtractImagesFromText(text)...)
+			return
 		}
-		if util.Clean(item["type"]) == "input_image" {
+		if list := anyList(value); list != nil {
+			for _, raw := range list {
+				walk(raw)
+			}
+			return
+		}
+		item, ok := value.(map[string]any)
+		if !ok {
+			return
+		}
+		switch util.Clean(item["type"]) {
+		case "input_image":
 			imageURL := util.Clean(item["image_url"])
 			if strings.HasPrefix(imageURL, "data:") {
-				images := ExtractImagesFromMessageContent([]any{item})
-				if len(images) > 0 {
-					return &images[0]
+				images = append(images, ExtractImagesFromMessageContent([]any{item})...)
+			}
+		case "image_generation_call":
+			if result := util.Clean(item["result"]); result != "" {
+				if data, err := base64.StdEncoding.DecodeString(result); err == nil {
+					images = append(images, UploadedImage{Data: data, Filename: "generated.png", ContentType: "image/png"})
 				}
 			}
 		}
-		images := ExtractImagesFromMessageContent(item["content"])
-		if len(images) > 0 {
-			return &images[0]
+		if item["content"] != nil {
+			images = append(images, ExtractImagesFromMessageContent(item["content"])...)
 		}
 	}
-	return nil
+	walk(input)
+	if len(images) > maxContextImages {
+		images = images[len(images)-maxContextImages:]
+	}
+	return images
 }
 
 func MessagesFromInput(input any, instructions any) []map[string]any {
@@ -661,34 +717,76 @@ func MessagesFromInput(input any, instructions any) []map[string]any {
 	if system := strings.TrimSpace(util.Clean(instructions)); system != "" {
 		messages = append(messages, map[string]any{"role": "system", "content": system})
 	}
+	messages = append(messages, responseInputMessages(input)...)
+	return NormalizeMessages(messages, nil)
+}
+
+func responseInputMessages(input any) []map[string]any {
 	if text, ok := input.(string); ok {
 		if strings.TrimSpace(text) != "" {
-			messages = append(messages, map[string]any{"role": "user", "content": strings.TrimSpace(text)})
+			return []map[string]any{{"role": "user", "content": strings.TrimSpace(text)}}
 		}
-		return messages
+		return nil
 	}
 	if item, ok := input.(map[string]any); ok {
-		messages = append(messages, map[string]any{"role": firstNonEmpty(util.Clean(item["role"]), "user"), "content": firstNonEmpty(ExtractResponsePrompt([]any{item}), util.Clean(item["content"]))})
-		return messages
+		if message, ok := responseMessageFromItem(item); ok {
+			return []map[string]any{message}
+		}
+		return nil
 	}
 	list := anyList(input)
 	allTyped := len(list) > 0
 	for _, raw := range list {
 		item, ok := raw.(map[string]any)
-		allTyped = allTyped && ok && item["type"] != nil
+		allTyped = allTyped && ok && item["type"] != nil && item["role"] == nil
 	}
 	if allTyped {
-		if text := ExtractResponsePrompt(list); text != "" {
-			messages = append(messages, map[string]any{"role": "user", "content": text})
+		var parts []string
+		for _, raw := range list {
+			if item, ok := raw.(map[string]any); ok {
+				if text := responseContentText([]any{item}); text != "" {
+					parts = append(parts, text)
+				}
+			}
 		}
-		return messages
+		if text := strings.TrimSpace(strings.Join(parts, "\n")); text != "" {
+			return []map[string]any{{"role": "user", "content": text}}
+		}
+		return nil
 	}
+	var messages []map[string]any
 	for _, raw := range list {
 		if item, ok := raw.(map[string]any); ok {
-			messages = append(messages, map[string]any{"role": firstNonEmpty(util.Clean(item["role"]), "user"), "content": firstNonEmpty(ExtractResponsePrompt([]any{item}), util.Clean(item["content"]))})
+			if message, ok := responseMessageFromItem(item); ok {
+				messages = append(messages, message)
+			}
 		}
 	}
 	return messages
+}
+
+func responseMessageFromItem(item map[string]any) (map[string]any, bool) {
+	switch util.Clean(item["type"]) {
+	case "input_text":
+		if text := strings.TrimSpace(util.Clean(item["text"])); text != "" {
+			return map[string]any{"role": "user", "content": text}, true
+		}
+	case "output_text":
+		if text := strings.TrimSpace(util.Clean(item["text"])); text != "" {
+			return map[string]any{"role": "assistant", "content": text}, true
+		}
+	case "image_generation_call":
+		if prompt := strings.TrimSpace(util.Clean(item["revised_prompt"])); prompt != "" {
+			return map[string]any{"role": "assistant", "content": "Generated image: " + prompt}, true
+		}
+	}
+	if util.Clean(item["type"]) == "message" || item["role"] != nil || item["content"] != nil {
+		role := firstNonEmpty(util.Clean(item["role"]), "user")
+		if text := responseContentText(item["content"]); text != "" {
+			return map[string]any{"role": role, "content": text}, true
+		}
+	}
+	return nil, false
 }
 
 func (e *Engine) HandleMessages(ctx context.Context, body map[string]any) (map[string]any, *StreamResult, error) {

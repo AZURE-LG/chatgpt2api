@@ -39,6 +39,15 @@ func TestUpstreamHTTPErrorKeepsPlainBodyDetail(t *testing.T) {
 	}
 }
 
+func TestUpstreamTransportErrorSummarizesSurfHandshakeFailure(t *testing.T) {
+	err := upstreamTransportError("bootstrap", errString(`Get "https://chatgpt.com/": surf: HTTP/2 request failed: uTLS.HandshakeContext() error: EOF; HTTP/1.1 fallback failed: uTLS.HandshakeContext() error: EOF`))
+	got := err.Error()
+	want := "bootstrap failed: upstream connection failed before TLS handshake completed; check proxy reachability to chatgpt.com or change proxy"
+	if got != want {
+		t.Fatalf("upstreamTransportError() = %q, want %q", got, want)
+	}
+}
+
 func TestApplyBrowserFingerprintPreservesAccountProfile(t *testing.T) {
 	client := &Client{fp: map[string]string{
 		"user-agent":     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/143.0.0.0 Safari/537.36 Edg/143.0.0.0",
@@ -86,6 +95,28 @@ func TestImageHeadersCarryAllRequirementTokens(t *testing.T) {
 	}
 	if headers["X-Oai-Turn-Trace-Id"] == "" {
 		t.Fatal("missing turn trace id")
+	}
+}
+
+func TestImageModelSlugSupportsSelection(t *testing.T) {
+	client := &Client{}
+	for _, tc := range []struct {
+		model string
+		want  string
+	}{
+		{model: "", want: "auto"},
+		{model: "auto", want: "auto"},
+		{model: "gpt-image-2", want: "gpt-5-3"},
+		{model: "codex-gpt-image-2", want: "codex-gpt-image-2"},
+		{model: "gpt-5", want: "gpt-5"},
+		{model: "gpt-5-3-mini", want: "gpt-5-3-mini"},
+		{model: "unknown", want: "auto"},
+	} {
+		t.Run(tc.model, func(t *testing.T) {
+			if got := client.imageModelSlug(tc.model); got != tc.want {
+				t.Fatalf("imageModelSlug(%q) = %q, want %q", tc.model, got, tc.want)
+			}
+		})
 	}
 }
 
@@ -160,6 +191,10 @@ func TestDownloadImageBytesAuthenticatesChatGPTBackendURLs(t *testing.T) {
 		t.Fatalf("DownloadImageBytes() = %#v", got)
 	}
 }
+
+type errString string
+
+func (e errString) Error() string { return string(e) }
 
 func serverURL(r *http.Request) string {
 	scheme := "http"

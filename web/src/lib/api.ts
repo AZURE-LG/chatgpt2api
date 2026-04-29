@@ -2,7 +2,24 @@ import { httpRequest } from "@/lib/request";
 
 export type AccountType = "Free" | "Plus" | "ProLite" | "Pro" | "Team";
 export type AccountStatus = "正常" | "限流" | "异常" | "禁用";
-export type ImageModel = "gpt-image-2" | "codex-gpt-image-2";
+export const IMAGE_MODEL_OPTIONS = [
+  { value: "auto", label: "Auto" },
+  { value: "gpt-image-2", label: "gpt-image-2" },
+  { value: "codex-gpt-image-2", label: "codex-gpt-image-2" },
+  { value: "gpt-5", label: "gpt-5" },
+  { value: "gpt-5-1", label: "gpt-5-1" },
+  { value: "gpt-5-2", label: "gpt-5-2" },
+  { value: "gpt-5-3", label: "gpt-5-3" },
+  { value: "gpt-5-3-mini", label: "gpt-5-3-mini" },
+  { value: "gpt-5-mini", label: "gpt-5-mini" },
+] as const;
+export type ImageModel = (typeof IMAGE_MODEL_OPTIONS)[number]["value"];
+export const DEFAULT_IMAGE_MODEL: ImageModel = "auto";
+const IMAGE_MODEL_VALUES = new Set<string>(IMAGE_MODEL_OPTIONS.map((option) => option.value));
+
+export function isImageModel(value: unknown): value is ImageModel {
+  return typeof value === "string" && IMAGE_MODEL_VALUES.has(value);
+}
 export type AuthRole = "admin" | "user";
 export type AnnouncementTarget = "login" | "image";
 
@@ -55,6 +72,7 @@ export type SettingsConfig = {
   proxy: string;
   base_url?: string;
   refresh_account_interval_minute?: number | string;
+  image_concurrent_limit?: number | string;
   image_retention_days?: number | string;
   auto_remove_invalid_accounts?: boolean;
   auto_remove_rate_limited_accounts?: boolean;
@@ -88,7 +106,7 @@ export type ImageResponse = {
 
 export type ImageTask = {
   id: string;
-  status: "queued" | "running" | "success" | "error";
+  status: "queued" | "running" | "success" | "error" | "cancelled";
   mode: "generate" | "edit";
   model?: ImageModel;
   size?: string;
@@ -99,8 +117,8 @@ export type ImageTask = {
 };
 
 type ImageTaskListResponse = {
-  items: ImageTask[];
-  missing_ids: string[];
+  items?: ImageTask[] | null;
+  missing_ids?: string[] | null;
 };
 
 export type LoginResponse = {
@@ -304,7 +322,13 @@ export async function editImage(files: File | File[], prompt: string, model?: Im
   );
 }
 
-export async function createImageGenerationTask(clientTaskId: string, prompt: string, model?: ImageModel, size?: string) {
+export async function createImageGenerationTask(
+  clientTaskId: string,
+  prompt: string,
+  model?: ImageModel,
+  size?: string,
+  count = 1,
+) {
   return httpRequest<ImageTask>("/api/image-tasks/generations", {
     method: "POST",
     body: {
@@ -312,6 +336,7 @@ export async function createImageGenerationTask(clientTaskId: string, prompt: st
       prompt,
       ...(model ? { model } : {}),
       ...(size ? { size } : {}),
+      n: count,
     },
   });
 }
@@ -322,6 +347,7 @@ export async function createImageEditTask(
   prompt: string,
   model?: ImageModel,
   size?: string,
+  count = 1,
 ) {
   const formData = new FormData();
   const uploadFiles = Array.isArray(files) ? files : [files];
@@ -337,6 +363,7 @@ export async function createImageEditTask(
   if (size) {
     formData.append("size", size);
   }
+  formData.append("n", String(count));
 
   return httpRequest<ImageTask>("/api/image-tasks/edits", {
     method: "POST",
@@ -349,7 +376,18 @@ export async function fetchImageTasks(ids: string[]) {
   if (ids.length > 0) {
     params.set("ids", ids.join(","));
   }
-  return httpRequest<ImageTaskListResponse>(`/api/image-tasks${params.toString() ? `?${params.toString()}` : ""}`);
+  const data = await httpRequest<ImageTaskListResponse>(`/api/image-tasks${params.toString() ? `?${params.toString()}` : ""}`);
+  return {
+    items: Array.isArray(data.items) ? data.items : [],
+    missing_ids: Array.isArray(data.missing_ids) ? data.missing_ids : [],
+  };
+}
+
+export async function cancelImageTask(clientTaskId: string) {
+  return httpRequest<ImageTask>(`/api/image-tasks/${encodeURIComponent(clientTaskId)}/cancel`, {
+    method: "POST",
+    body: {},
+  });
 }
 
 export async function fetchSettingsConfig() {

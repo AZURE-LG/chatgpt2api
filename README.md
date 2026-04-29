@@ -175,7 +175,7 @@ curl http://localhost:8000/v1/images/generations \
   -H "Content-Type: application/json" \
   -H "Authorization: Bearer <auth-key>" \
   -d '{
-    "model": "gpt-image-2",
+    "model": "auto",
     "prompt": "一只漂浮在太空里的猫",
     "n": 1,
     "response_format": "b64_json"
@@ -188,7 +188,7 @@ curl http://localhost:8000/v1/images/generations \
 
 | 字段                | 说明                                                 |
 |:------------------|:---------------------------------------------------|
-| `model`           | 图片模型，当前可用值以 `/v1/models` 返回结果为准，推荐使用 `gpt-image-2` |
+| `model`           | 图片模型，当前可用值以 `/v1/models` 返回结果为准，默认 `auto` |
 | `prompt`          | 图片生成提示词                                            |
 | `n`               | 生成数量，当前后端限制为 `1-4`                                 |
 | `response_format` | 当前请求模型中包含该字段，默认值为 `b64_json`                       |
@@ -206,7 +206,7 @@ OpenAI 兼容图片编辑接口，用于上传图片并生成编辑结果。
 ```bash
 curl http://localhost:8000/v1/images/edits \
   -H "Authorization: Bearer <auth-key>" \
-  -F "model=gpt-image-2" \
+  -F "model=auto" \
   -F "prompt=把这张图改成赛博朋克夜景风格" \
   -F "n=1" \
   -F "image=@./input.png"
@@ -218,7 +218,7 @@ curl http://localhost:8000/v1/images/edits \
 
 | 字段       | 说明                                  |
 |:---------|:------------------------------------|
-| `model`  | 图片模型， `gpt-image-2`                 |
+| `model`  | 图片模型，当前可用值以 `/v1/models` 返回结果为准，默认 `auto` |
 | `prompt` | 图片编辑提示词                             |
 | `n`      | 生成数量，当前后端限制为 `1-4`                  |
 | `image`  | 需要编辑的图片文件，使用 multipart/form-data 上传 |
@@ -238,13 +238,14 @@ curl http://localhost:8000/v1/chat/completions \
   -H "Content-Type: application/json" \
   -H "Authorization: Bearer <auth-key>" \
   -d '{
-    "model": "gpt-image-2",
+    "model": "auto",
     "messages": [
       {
         "role": "user",
         "content": "生成一张雨夜东京街头的赛博朋克猫"
       }
     ],
+    "modalities": ["image"],
     "n": 1
   }'
 ```
@@ -257,6 +258,7 @@ curl http://localhost:8000/v1/chat/completions \
 |:-----------|:------------------|
 | `model`    | 图片模型，默认按图片生成场景处理  |
 | `messages` | 消息数组，需要是图片相关请求内容  |
+| `modalities` | 使用 `auto`、`gpt-5` 等文本模型 ID 触发图片场景时传 `["image"]` |
 | `n`        | 生成数量，按当前实现解析为图片数量 |
 | `stream`   | 已实现，但仍在测试         |
 

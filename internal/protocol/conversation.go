@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+	"sync"
 	"time"
 
 	"chatgpt2api/internal/backend"
@@ -29,6 +30,9 @@ type Engine struct {
 	Config   ImageConfig
 	Proxy    *service.ProxyService
 	Logger   *service.Logger
+
+	responseContextMu sync.Mutex
+	ResponseContexts  *ResponseContextStore
 }
 
 type ConversationRequest struct {
@@ -93,8 +97,8 @@ func imageStreamErrorMessage(message string) string {
 		strings.Contains(lower, "cloudflare challenge") {
 		return "upstream returned Cloudflare challenge page; refresh browser fingerprint/session or change proxy"
 	}
-	if strings.Contains(lower, "curl: (35)") || strings.Contains(lower, "tls connect error") || strings.Contains(lower, "openssl_internal") {
-		return "upstream image connection failed, please retry later"
+	if detail, ok := util.SummarizeUpstreamConnectionError(text); ok {
+		return detail
 	}
 	if text == "" {
 		return "image generation failed"
@@ -144,7 +148,7 @@ func (e *Engine) ListModels(ctx context.Context) (map[string]any, error) {
 			seen[id] = struct{}{}
 		}
 	}
-	for model := range util.ImageModels {
+	for _, model := range util.ImageGenerationModelList() {
 		if _, ok := seen[model]; !ok {
 			data = append(data, map[string]any{"id": model, "object": "model", "created": 0, "owned_by": "chatgpt2api", "permission": []any{}, "root": model, "parent": nil})
 		}
@@ -203,14 +207,14 @@ func (e *Engine) ConversationEvents(ctx context.Context, client *backend.Client,
 		if len(normalized) == 0 && prompt != "" {
 			normalized = []map[string]any{{"role": "user", "content": prompt}}
 		}
-		imageModel := util.IsImageModel(model)
+		imageModel := util.IsImageModel(model) || (prompt != "" && util.IsImageGenerationModel(model))
 		historyText := ""
 		historyMessages := []string{}
 		finalPrompt := prompt
 		systemHints := []string{}
 		streamImages := []string(nil)
 		if imageModel {
-			finalPrompt = BuildImagePrompt(prompt, size)
+			finalPrompt = BuildImageContextPrompt(normalized, prompt, size)
 			systemHints = []string{"picture_v2"}
 			streamImages = images
 		} else {
@@ -293,8 +297,8 @@ func (e *Engine) StreamImageOutputsWithPool(ctx context.Context, request Convers
 	go func() {
 		defer close(out)
 		defer close(errCh)
-		if !util.IsImageModel(request.Model) {
-			errCh <- &ImageGenerationError{Message: "unsupported image model,supported models: gpt-image-2, codex-gpt-image-2", StatusCode: 502, Type: "server_error", Code: "upstream_error"}
+		if !util.IsImageGenerationModel(request.Model) {
+			errCh <- &ImageGenerationError{Message: "unsupported image model,supported models: " + util.ImageGenerationModelNames(), StatusCode: 502, Type: "server_error", Code: "upstream_error"}
 			return
 		}
 		emitted := false
@@ -338,6 +342,7 @@ func (e *Engine) StreamImageOutputsWithPool(ctx context.Context, request Convers
 				err = <-imageErr
 				if err == nil {
 					if rateLimitedForToken {
+						e.Accounts.MarkImageResult(token, false)
 						e.Accounts.ApplyAccountErrorMessage(token, "image_stream", rateLimitMessage)
 						continue
 					}
@@ -380,7 +385,7 @@ func (e *Engine) StreamImageOutputs(ctx context.Context, client *backend.Client,
 		defer close(out)
 		defer close(errCh)
 		var last ConversationEvent
-		events, convErr := e.ConversationEvents(ctx, client, nil, request.Model, request.Prompt, request.Images, request.Size)
+		events, convErr := e.ConversationEvents(ctx, client, request.Messages, request.Model, request.Prompt, request.Images, request.Size)
 		for event := range events {
 			last = event
 			if event["type"] == "conversation.delta" {
@@ -458,9 +463,7 @@ func (e *Engine) CollectImageOutputs(outputs <-chan ImageOutput, errCh <-chan er
 			data = append(data, output.Data...)
 		}
 	}
-	if err := <-errCh; err != nil {
-		return nil, err
-	}
+	streamErr := <-errCh
 	if created == 0 {
 		created = time.Now().Unix()
 	}
@@ -469,6 +472,12 @@ func (e *Engine) CollectImageOutputs(outputs <-chan ImageOutput, errCh <-chan er
 		if text := firstNonEmpty(message, strings.TrimSpace(strings.Join(progress, ""))); text != "" {
 			result["message"] = text
 		}
+	}
+	if streamErr != nil {
+		if result["message"] == nil {
+			result["message"] = streamErr.Error()
+		}
+		return result, streamErr
 	}
 	return result, nil
 }

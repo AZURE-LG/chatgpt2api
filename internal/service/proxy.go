@@ -13,6 +13,8 @@ import (
 	"strings"
 	"time"
 
+	"chatgpt2api/internal/util"
+
 	"github.com/enetx/g"
 	"github.com/enetx/surf"
 )
@@ -42,9 +44,11 @@ func (s *ProxyService) BrowserHTTPClientWithProfile(profile string, timeout time
 }
 
 func (s *ProxyService) Test(candidate string, timeout time.Duration) map[string]any {
+	candidate = strings.TrimSpace(candidate)
 	if candidate == "" {
 		candidate = s.config.Proxy()
 	}
+	candidate = strings.TrimSpace(candidate)
 	if candidate == "" {
 		return map[string]any{"ok": false, "status": 0, "latency_ms": 0, "error": "proxy url is required"}
 	}
@@ -52,16 +56,20 @@ func (s *ProxyService) Test(candidate string, timeout time.Duration) map[string]
 	if err != nil || parsed.Host == "" || (parsed.Scheme != "http" && parsed.Scheme != "https" && parsed.Scheme != "socks5" && parsed.Scheme != "socks5h") {
 		return map[string]any{"ok": false, "status": 0, "latency_ms": 0, "error": "invalid proxy url"}
 	}
-	client := &http.Client{Timeout: timeout, Transport: transportForProxyURL(parsed)}
+	client := browserHTTPClientForProfile(candidate, "", timeout)
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
-	req, _ := http.NewRequestWithContext(ctx, http.MethodGet, "https://chatgpt.com/api/auth/csrf", nil)
+	req, _ := http.NewRequestWithContext(ctx, http.MethodGet, "https://chatgpt.com/", nil)
 	req.Header.Set("user-agent", "Mozilla/5.0 (chatgpt2api proxy test)")
 	start := time.Now()
 	resp, err := client.Do(req)
 	latency := time.Since(start).Milliseconds()
 	if err != nil {
-		return map[string]any{"ok": false, "status": 0, "latency_ms": latency, "error": err.Error()}
+		message := err.Error()
+		if detail, ok := util.SummarizeUpstreamConnectionError(message); ok {
+			message = detail
+		}
+		return map[string]any{"ok": false, "status": 0, "latency_ms": latency, "error": message}
 	}
 	defer resp.Body.Close()
 	ok := resp.StatusCode < 500

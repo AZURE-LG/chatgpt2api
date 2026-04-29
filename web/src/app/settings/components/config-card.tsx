@@ -20,6 +20,7 @@ export function ConfigCard() {
   const isLoadingConfig = useSettingsStore((state) => state.isLoadingConfig);
   const isSavingConfig = useSettingsStore((state) => state.isSavingConfig);
   const setRefreshAccountIntervalMinute = useSettingsStore((state) => state.setRefreshAccountIntervalMinute);
+  const setImageConcurrentLimit = useSettingsStore((state) => state.setImageConcurrentLimit);
   const setImageRetentionDays = useSettingsStore((state) => state.setImageRetentionDays);
   const setAutoRemoveInvalidAccounts = useSettingsStore((state) => state.setAutoRemoveInvalidAccounts);
   const setAutoRemoveRateLimitedAccounts = useSettingsStore((state) => state.setAutoRemoveRateLimitedAccounts);
@@ -125,6 +126,16 @@ export function ConfigCard() {
               className="h-10 rounded-xl border-stone-200 bg-white"
             />
             <p className="text-xs text-stone-500">用于生成图片结果的访问前缀地址。</p>
+          </div>
+          <div className="space-y-2">
+            <label className="text-sm text-stone-700">同时生成张数</label>
+            <Input
+              value={String(config?.image_concurrent_limit || "")}
+              onChange={(event) => setImageConcurrentLimit(event.target.value)}
+              placeholder="4"
+              className="h-10 rounded-xl border-stone-200 bg-white"
+            />
+            <p className="text-xs text-stone-500">控制后台图片任务同时占用的生成槽位。</p>
           </div>
           <div className="space-y-2">
             <label className="text-sm text-stone-700">图片自动清理</label>

@@ -31,6 +31,7 @@ function normalizeConfig(config: SettingsConfig): SettingsConfig {
   return {
     ...config,
     refresh_account_interval_minute: Number(config.refresh_account_interval_minute || 5),
+    image_concurrent_limit: Number(config.image_concurrent_limit || 4),
     image_retention_days: Number(config.image_retention_days || 30),
     auto_remove_invalid_accounts: Boolean(config.auto_remove_invalid_accounts),
     auto_remove_rate_limited_accounts: Boolean(config.auto_remove_rate_limited_accounts),
@@ -92,6 +93,7 @@ type SettingsStore = {
   loadConfig: () => Promise<void>;
   saveConfig: () => Promise<void>;
   setRefreshAccountIntervalMinute: (value: string) => void;
+  setImageConcurrentLimit: (value: string) => void;
   setImageRetentionDays: (value: string) => void;
   setAutoRemoveInvalidAccounts: (value: boolean) => void;
   setAutoRemoveRateLimitedAccounts: (value: boolean) => void;
@@ -197,6 +199,7 @@ export const useSettingsStore = create<SettingsStore>((set, get) => ({
       const data = await updateSettingsConfig({
         ...config,
         refresh_account_interval_minute: Math.max(1, Number(config.refresh_account_interval_minute) || 1),
+        image_concurrent_limit: Math.max(1, Number(config.image_concurrent_limit) || 4),
         image_retention_days: Math.max(1, Number(config.image_retention_days) || 30),
         auto_remove_invalid_accounts: Boolean(config.auto_remove_invalid_accounts),
         auto_remove_rate_limited_accounts: Boolean(config.auto_remove_rate_limited_accounts),
@@ -230,6 +233,10 @@ export const useSettingsStore = create<SettingsStore>((set, get) => ({
 
   setImageRetentionDays: (value) => {
     set((state) => state.config ? { config: { ...state.config, image_retention_days: value } } : {});
+  },
+
+  setImageConcurrentLimit: (value) => {
+    set((state) => state.config ? { config: { ...state.config, image_concurrent_limit: value } } : {});
   },
 
   setAutoRemoveInvalidAccounts: (value) => {

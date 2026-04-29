@@ -12,9 +12,10 @@ func TestImageStreamErrorMessage(t *testing.T) {
 		"curl: (35) OpenSSL SSL_connect: SSL_ERROR_SYSCALL",
 		"TLS connect error: connection reset by peer",
 		"error: OPENSSL_INTERNAL:WRONG_VERSION_NUMBER",
+		`Get "https://chatgpt.com/": surf: HTTP/2 request failed: uTLS.HandshakeContext() error: EOF; HTTP/1.1 fallback failed: uTLS.HandshakeContext() error: EOF`,
 	}
 	for _, input := range cases {
-		if got := imageStreamErrorMessage(input); got != "upstream image connection failed, please retry later" {
+		if got := imageStreamErrorMessage(input); got != "upstream connection failed before TLS handshake completed; check proxy reachability to chatgpt.com or change proxy" {
 			t.Fatalf("imageStreamErrorMessage(%q) = %q", input, got)
 		}
 	}

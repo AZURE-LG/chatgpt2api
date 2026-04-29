@@ -29,6 +29,7 @@ type AccountService struct {
 	logs              *LogService
 	index             int
 	items             []map[string]any
+	imageReservations map[string]int
 	remoteBaseURL     string
 	browserHTTPClient func(profile string, timeout time.Duration) *http.Client
 }
@@ -51,6 +52,7 @@ func NewAccountService(backend storage.Backend, config AccountConfig, proxy *Pro
 		config:            config,
 		proxy:             proxy,
 		logs:              logs,
+		imageReservations: map[string]int{},
 		remoteBaseURL:     "https://chatgpt.com",
 		browserHTTPClient: browserHTTPClient,
 	}
@@ -150,8 +152,10 @@ func (s *AccountService) DeleteAccounts(tokens []string) map[string]any {
 	next := s.items[:0]
 	removed := 0
 	for _, item := range s.items {
-		if _, ok := targets[util.Clean(item["access_token"])]; ok {
+		token := util.Clean(item["access_token"])
+		if _, ok := targets[token]; ok {
 			removed++
+			delete(s.imageReservations, token)
 			continue
 		}
 		next = append(next, item)
@@ -193,6 +197,7 @@ func (s *AccountService) UpdateAccount(accessToken string, updates map[string]an
 		return nil
 	}
 	if account["status"] == "限流" && s.config.AutoRemoveRateLimitedAccounts() {
+		delete(s.imageReservations, accessToken)
 		s.items = append(s.items[:idx], s.items[idx+1:]...)
 		_ = s.saveLocked()
 		s.logs.Add(LogTypeAccount, "自动移除限流账号", map[string]any{"token": util.AnonymizeToken(accessToken)})
@@ -233,15 +238,16 @@ func (s *AccountService) GetTextAccessToken() string {
 func (s *AccountService) GetAvailableAccessToken(ctx context.Context) (string, error) {
 	attempted := map[string]struct{}{}
 	for {
-		token, err := s.pickNextCandidateToken(attempted)
+		reservation, err := s.reserveNextCandidateToken(attempted)
 		if err != nil {
 			return "", err
 		}
-		attempted[token] = struct{}{}
-		account := s.RefreshAccountState(ctx, token)
-		if IsImageAccountAvailable(account) {
-			return token, nil
+		attempted[reservation.token] = struct{}{}
+		account := s.RefreshAccountState(ctx, reservation.token)
+		if account != nil && s.reservedImageSlotAvailable(reservation) {
+			return reservation.token, nil
 		}
+		s.releaseImageReservation(reservation.token)
 	}
 }
 
@@ -249,7 +255,7 @@ func (s *AccountService) HasAvailableAccount() bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	for _, item := range s.items {
-		if IsImageAccountAvailable(item) {
+		if s.availableImageSlotsLocked(item) > 0 {
 			return true
 		}
 	}
@@ -327,6 +333,7 @@ func (s *AccountService) MarkImageResult(accessToken string, success bool) map[s
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	s.releaseImageReservationLocked(accessToken)
 	idx := s.findIndexLocked(accessToken)
 	if idx < 0 {
 		return nil
@@ -359,6 +366,7 @@ func (s *AccountService) MarkImageResult(accessToken string, success bool) map[s
 		return nil
 	}
 	if account["status"] == "限流" && s.config.AutoRemoveRateLimitedAccounts() {
+		delete(s.imageReservations, accessToken)
 		s.items = append(s.items[:idx], s.items[idx+1:]...)
 		_ = s.saveLocked()
 		s.logs.Add(LogTypeAccount, "自动移除限流账号", map[string]any{"token": util.AnonymizeToken(accessToken)})
@@ -524,7 +532,12 @@ func (s *AccountService) StartLimitedWatcher(ctx context.Context, interval time.
 	}()
 }
 
-func (s *AccountService) pickNextCandidateToken(excluded map[string]struct{}) (string, error) {
+type imageTokenReservation struct {
+	token string
+	slot  int
+}
+
+func (s *AccountService) reserveNextCandidateToken(excluded map[string]struct{}) (imageTokenReservation, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	var tokens []string
@@ -536,16 +549,80 @@ func (s *AccountService) pickNextCandidateToken(excluded map[string]struct{}) (s
 		if _, ok := excluded[token]; ok {
 			continue
 		}
-		if IsImageAccountAvailable(item) {
+		if s.availableImageSlotsLocked(item) > 0 {
 			tokens = append(tokens, token)
 		}
 	}
 	if len(tokens) == 0 {
-		return "", fmt.Errorf("no available image quota")
+		return imageTokenReservation{}, fmt.Errorf("no available image quota")
 	}
 	token := tokens[s.index%len(tokens)]
 	s.index++
-	return token, nil
+	s.ensureImageReservationsLocked()
+	s.imageReservations[token]++
+	return imageTokenReservation{token: token, slot: s.imageReservations[token]}, nil
+}
+
+func (s *AccountService) reservedImageSlotAvailable(reservation imageTokenReservation) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	idx := s.findIndexLocked(reservation.token)
+	if idx < 0 {
+		return false
+	}
+	return reservation.slot > 0 && reservation.slot <= imageAccountCapacity(s.items[idx])
+}
+
+func (s *AccountService) availableImageSlotsLocked(account map[string]any) int {
+	capacity := imageAccountCapacity(account)
+	if capacity <= 0 {
+		return 0
+	}
+	token := util.Clean(account["access_token"])
+	if token == "" {
+		return 0
+	}
+	inFlight := s.imageReservations[token]
+	if inFlight >= capacity {
+		return 0
+	}
+	return capacity - inFlight
+}
+
+func (s *AccountService) releaseImageReservation(accessToken string) {
+	accessToken = util.Clean(accessToken)
+	if accessToken == "" {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.releaseImageReservationLocked(accessToken)
+}
+
+func (s *AccountService) releaseImageReservationLocked(accessToken string) {
+	s.ensureImageReservationsLocked()
+	count := s.imageReservations[accessToken]
+	if count <= 1 {
+		delete(s.imageReservations, accessToken)
+		return
+	}
+	s.imageReservations[accessToken] = count - 1
+}
+
+func (s *AccountService) ensureImageReservationsLocked() {
+	if s.imageReservations == nil {
+		s.imageReservations = map[string]int{}
+	}
+}
+
+func imageAccountCapacity(account map[string]any) int {
+	if !IsImageAccountAvailable(account) {
+		return 0
+	}
+	if util.ToBool(account["image_quota_unknown"]) {
+		return 1
+	}
+	return util.ToInt(account["quota"], 0)
 }
 
 func (s *AccountService) findIndexLocked(accessToken string) int {

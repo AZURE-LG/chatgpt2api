@@ -2,7 +2,7 @@
 
 import localforage from "localforage";
 
-import type { ImageModel } from "@/lib/api";
+import { DEFAULT_IMAGE_MODEL, isImageModel, type ImageModel } from "@/lib/api";
 
 export type ImageConversationMode = "generate" | "image" | "edit";
 export type StoredReferenceImageSource = "upload" | "conversation";
@@ -17,14 +17,14 @@ export type StoredReferenceImage = {
 export type StoredImage = {
   id: string;
   taskId?: string;
-  status?: "loading" | "success" | "error";
+  status?: "loading" | "success" | "error" | "cancelled";
   b64_json?: string;
   url?: string;
   revised_prompt?: string;
   error?: string;
 };
 
-export type ImageTurnStatus = "queued" | "generating" | "success" | "error";
+export type ImageTurnStatus = "queued" | "generating" | "success" | "error" | "cancelled";
 
 export type ImageTurn = {
   id: string;
@@ -68,7 +68,7 @@ function normalizeStoredImage(image: StoredImage): StoredImage {
     url: typeof image.url === "string" && image.url ? image.url : undefined,
     revised_prompt: typeof image.revised_prompt === "string" ? image.revised_prompt : undefined,
   };
-  if (image.status === "loading" || image.status === "error" || image.status === "success") {
+  if (image.status === "loading" || image.status === "error" || image.status === "success" || image.status === "cancelled") {
     return normalized;
   }
   return {
@@ -146,12 +146,14 @@ function normalizeTurn(turn: ImageTurn & Record<string, unknown>): ImageTurn {
       ? "generating"
       : normalizedImages.some((image) => image.status === "error")
         ? "error"
+        : normalizedImages.some((image) => image.status === "cancelled")
+          ? "cancelled"
         : "success";
 
   return {
     id: String(turn.id || `${Date.now()}`),
     prompt: String(turn.prompt || ""),
-    model: (turn.model as ImageModel) || "gpt-image-2",
+    model: isImageModel(turn.model) ? turn.model : DEFAULT_IMAGE_MODEL,
     mode: normalizeImageMode(turn.mode, referenceImages),
     referenceImages,
     count: Math.max(1, Number(turn.count || normalizedImages.length || 1)),
@@ -162,7 +164,8 @@ function normalizeTurn(turn: ImageTurn & Record<string, unknown>): ImageTurn {
       turn.status === "queued" ||
       turn.status === "generating" ||
       turn.status === "success" ||
-      turn.status === "error"
+      turn.status === "error" ||
+      turn.status === "cancelled"
         ? turn.status
         : derivedStatus,
     error: typeof turn.error === "string" ? turn.error : undefined,
@@ -177,7 +180,7 @@ function normalizeConversation(conversation: ImageConversation & Record<string, 
         normalizeTurn({
           id: String(conversation.id || `${Date.now()}`),
           prompt: String(conversation.prompt || ""),
-          model: (conversation.model as ImageModel) || "gpt-image-2",
+          model: isImageModel(conversation.model) ? conversation.model : DEFAULT_IMAGE_MODEL,
           mode: normalizeImageMode(conversation.mode, legacyReferenceImages),
           referenceImages: legacyReferenceImages,
           count: Number(conversation.count || 1),

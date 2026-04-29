@@ -400,13 +400,27 @@ func (a *App) handleImageTasks(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	parts := splitPath(r.URL.Path)
 	if r.URL.Path == "/api/image-tasks" && r.Method == http.MethodGet {
 		util.WriteJSON(w, http.StatusOK, a.tasks.ListTasks(identity, util.ParseCommaList(r.URL.Query().Get("ids"))))
 		return
 	}
+	if len(parts) == 4 && parts[0] == "api" && parts[1] == "image-tasks" && parts[3] == "cancel" {
+		if r.Method != http.MethodPost {
+			w.WriteHeader(http.StatusMethodNotAllowed)
+			return
+		}
+		task, err := a.tasks.CancelTask(identity, parts[2])
+		if err != nil {
+			util.WriteError(w, http.StatusNotFound, err.Error())
+			return
+		}
+		util.WriteJSON(w, http.StatusOK, task)
+		return
+	}
 	if r.URL.Path == "/api/image-tasks/generations" && r.Method == http.MethodPost {
 		body, _ := readJSONMap(r)
-		task, err := a.tasks.SubmitGeneration(r.Context(), identity, util.Clean(body["client_task_id"]), util.Clean(body["prompt"]), firstNonEmpty(util.Clean(body["model"]), "gpt-image-2"), util.Clean(body["size"]), a.resolveImageBaseURL(r))
+		task, err := a.tasks.SubmitGeneration(r.Context(), identity, util.Clean(body["client_task_id"]), util.Clean(body["prompt"]), firstNonEmpty(util.Clean(body["model"]), util.ImageModelAuto), util.Clean(body["size"]), a.resolveImageBaseURL(r), util.ToInt(body["n"], 1))
 		if err != nil {
 			util.WriteError(w, http.StatusBadRequest, err.Error())
 			return
@@ -420,7 +434,7 @@ func (a *App) handleImageTasks(w http.ResponseWriter, r *http.Request) {
 			util.WriteError(w, http.StatusBadRequest, err.Error())
 			return
 		}
-		task, err := a.tasks.SubmitEdit(r.Context(), identity, util.Clean(body["client_task_id"]), util.Clean(body["prompt"]), firstNonEmpty(util.Clean(body["model"]), "gpt-image-2"), util.Clean(body["size"]), a.resolveImageBaseURL(r), images)
+		task, err := a.tasks.SubmitEdit(r.Context(), identity, util.Clean(body["client_task_id"]), util.Clean(body["prompt"]), firstNonEmpty(util.Clean(body["model"]), util.ImageModelAuto), util.Clean(body["size"]), a.resolveImageBaseURL(r), images, util.ToInt(body["n"], 1))
 		if err != nil {
 			util.WriteError(w, http.StatusBadRequest, err.Error())
 			return
