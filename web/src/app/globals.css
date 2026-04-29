@@ -165,6 +165,12 @@
   }
 }
 
+@layer components {
+  .card-surface {
+    background: var(--surface-card-gradient);
+  }
+}
+
 @layer utilities {
   .brand-card-shadow {
     box-shadow: var(--shadow-brand);
@@ -180,10 +186,6 @@
 
   .elevated-shadow {
     box-shadow: var(--shadow-elevated);
-  }
-
-  .card-surface {
-    background: var(--surface-card-gradient);
   }
 
   .hide-scrollbar {

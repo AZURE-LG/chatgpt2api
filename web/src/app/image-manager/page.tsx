@@ -363,7 +363,6 @@ function ImageManagerContent({ canDeleteImages }: { canDeleteImages: boolean }) 
               </div>
               <div className="space-y-1">
                 <p className="text-sm font-medium text-foreground">正在加载图片</p>
-                <p className="text-sm text-muted-foreground">正在同步图片库。</p>
               </div>
             </CardContent>
           </Card>
