@@ -239,6 +239,30 @@ func TestImageTaskFailureWritesCallLog(t *testing.T) {
 	}
 }
 
+func TestImageTaskPollingDisablesCaching(t *testing.T) {
+	app := newTestApp(t)
+	defer app.Close()
+
+	_, rawKey, err := app.auth.CreateKey("user", "frontend")
+	if err != nil {
+		t.Fatalf("CreateKey() error = %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/api/image-tasks?ids=missing", nil)
+	req.Header.Set("Authorization", "Bearer "+rawKey)
+	res := httptest.NewRecorder()
+	app.Handler().ServeHTTP(res, req)
+	if res.Code != http.StatusOK {
+		t.Fatalf("image task list status = %d body = %s", res.Code, res.Body.String())
+	}
+	if got := res.Header().Get("Cache-Control"); got != "no-store" {
+		t.Fatalf("Cache-Control = %q, want no-store", got)
+	}
+	if got := res.Header().Get("Pragma"); got != "no-cache" {
+		t.Fatalf("Pragma = %q, want no-cache", got)
+	}
+}
+
 func TestModelsCallLogIncludesUserKeyName(t *testing.T) {
 	app := newTestApp(t)
 	defer app.Close()

@@ -321,10 +321,12 @@ export function ImageResults({
         const resultCount = visualImages.length || (turnBusy ? turn.count : 0);
         const outcomeLabel = getTurnOutcomeLabel(successCount, failedCount, cancelledCount);
         const showResultSummary = visualImages.length > 0 || turnBusy;
-        const createdAtTime = Date.parse(turn.createdAt);
-        const progressStartedAt = progress?.startedAt ?? (Number.isFinite(createdAtTime) ? createdAtTime : progressNow);
+        const progressStartedAt =
+          progress && Number.isFinite(progress.startedAt) ? progress.startedAt : null;
         const elapsedClock = turnBusy
-          ? formatElapsedClock(Math.max(0, Math.floor((progressNow - progressStartedAt) / 1000)))
+          ? progressStartedAt === null
+            ? ""
+            : formatElapsedClock(Math.max(0, Math.floor((progressNow - progressStartedAt) / 1000)))
           : "";
         const progressMessage =
           progress?.message || (turn.status === "queued" ? "等待前序任务" : turnBusy ? "正在处理图片" : "");
@@ -536,7 +538,12 @@ export function ImageResults({
                             selected && "ring-2 ring-[#1456f0]/90 ring-offset-2",
                           )}
                         >
-                          <div className="block w-full overflow-hidden">
+                          <button
+                            type="button"
+                            onClick={() => toggleImageSelection(selectionKey)}
+                            className="block w-full cursor-pointer overflow-hidden text-left"
+                            aria-label={selected ? "取消选择图片" : "选择图片"}
+                          >
                             <img
                               src={imageSrc}
                               alt={`Generated result ${index + 1}`}
@@ -552,7 +559,7 @@ export function ImageResults({
                                 }
                               }}
                             />
-                          </div>
+                          </button>
                           <button
                             type="button"
                             onClick={() => toggleImageSelection(selectionKey)}
@@ -698,8 +705,12 @@ function turnProgressKey(conversationId: string, turnId: string) {
 
 function formatElapsedClock(totalSeconds: number) {
   const safeSeconds = Math.max(0, totalSeconds);
-  const minutes = Math.floor(safeSeconds / 60);
+  const hours = Math.floor(safeSeconds / 3600);
+  const minutes = Math.floor((safeSeconds % 3600) / 60);
   const seconds = safeSeconds % 60;
+  if (hours > 0) {
+    return `${String(hours).padStart(2, "0")}:${String(minutes).padStart(2, "0")}:${String(seconds).padStart(2, "0")}`;
+  }
   return `${String(minutes).padStart(2, "0")}:${String(seconds).padStart(2, "0")}`;
 }
 

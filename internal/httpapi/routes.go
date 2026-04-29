@@ -396,6 +396,8 @@ func (a *App) handleSub2API(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *App) handleImageTasks(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Cache-Control", "no-store")
+	w.Header().Set("Pragma", "no-cache")
 	identity, ok := a.requireIdentity(w, r, "")
 	if !ok {
 		return

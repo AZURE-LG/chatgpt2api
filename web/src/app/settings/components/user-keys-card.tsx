@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import { Ban, CheckCircle2, Copy, Eye, KeyRound, LoaderCircle, Plus, Trash2 } from "lucide-react";
+import { Ban, CheckCircle2, Copy, Eye, EyeOff, KeyRound, LoaderCircle, Plus, Trash2 } from "lucide-react";
 import { toast } from "sonner";
 
 import { Badge } from "@/components/ui/badge";
@@ -44,9 +44,7 @@ export function UserKeysCard() {
   const [isCreating, setIsCreating] = useState(false);
   const [pendingIds, setPendingIds] = useState<Set<string>>(() => new Set());
   const [revealingIds, setRevealingIds] = useState<Set<string>>(() => new Set());
-  const [revealedKey, setRevealedKey] = useState("");
-  const [revealedKeyName, setRevealedKeyName] = useState("");
-  const [revealedKeyItemId, setRevealedKeyItemId] = useState("");
+  const [revealedKeysById, setRevealedKeysById] = useState<Record<string, string>>({});
   const [deletingItem, setDeletingItem] = useState<UserKey | null>(null);
 
   const load = async () => {
@@ -74,9 +72,7 @@ export function UserKeysCard() {
     try {
       const data = await createUserKey(name.trim());
       setItems(data.items);
-      setRevealedKey(data.key);
-      setRevealedKeyName(data.item.name);
-      setRevealedKeyItemId(data.item.id);
+      setRevealedKeysById((current) => ({ ...current, [data.item.id]: data.key }));
       setName("");
       setIsDialogOpen(false);
       toast.success("用户密钥已创建");
@@ -134,11 +130,11 @@ export function UserKeysCard() {
       const data = await deleteUserKey(item.id);
       setItems(data.items);
       setDeletingItem(null);
-      if (revealedKeyItemId === item.id) {
-        setRevealedKey("");
-        setRevealedKeyName("");
-        setRevealedKeyItemId("");
-      }
+      setRevealedKeysById((current) => {
+        const next = { ...current };
+        delete next[item.id];
+        return next;
+      });
       toast.success("用户密钥已删除");
     } catch (error) {
       toast.error(error instanceof Error ? error.message : "删除用户密钥失败");
@@ -148,12 +144,19 @@ export function UserKeysCard() {
   };
 
   const handleReveal = async (item: UserKey) => {
+    if (revealedKeysById[item.id]) {
+      setRevealedKeysById((current) => {
+        const next = { ...current };
+        delete next[item.id];
+        return next;
+      });
+      return;
+    }
+
     setRevealPending(item.id, true);
     try {
       const data = await revealUserKey(item.id);
-      setRevealedKey(data.key);
-      setRevealedKeyName(item.name);
-      setRevealedKeyItemId(item.id);
+      setRevealedKeysById((current) => ({ ...current, [item.id]: data.key }));
       toast.success("用户密钥已显示");
     } catch (error) {
       toast.error(error instanceof Error ? error.message : "查看用户密钥失败");
@@ -191,24 +194,6 @@ export function UserKeysCard() {
             </Button>
           </div>
 
-          {revealedKey ? (
-            <div className="rounded-xl border border-emerald-200 bg-emerald-50 px-4 py-4 text-sm text-emerald-900">
-              <div className="font-medium">{revealedKeyName ? `「${revealedKeyName}」密钥已显示：` : "用户密钥已显示："}</div>
-              <div className="mt-3 flex flex-col gap-3 rounded-lg border border-emerald-200 bg-white/80 p-3 md:flex-row md:items-center md:justify-between">
-                <code className="break-all font-mono text-[13px]">{revealedKey}</code>
-                <Button
-                  type="button"
-                  variant="outline"
-                  className="h-9 rounded-xl border-emerald-200 bg-white px-4 text-emerald-700"
-                  onClick={() => void handleCopy(revealedKey)}
-                >
-                  <Copy className="size-4" />
-                  复制
-                </Button>
-              </div>
-            </div>
-          ) : null}
-
           {isLoading ? (
             <div className="flex items-center justify-center py-10">
               <LoaderCircle className="size-5 animate-spin text-stone-400" />
@@ -222,8 +207,12 @@ export function UserKeysCard() {
               {items.map((item) => {
                 const isPending = pendingIds.has(item.id);
                 const isRevealing = revealingIds.has(item.id);
+                const revealedKey = revealedKeysById[item.id] ?? "";
                 return (
-                  <div key={item.id} className="flex flex-col gap-3 rounded-xl border border-stone-200 bg-white px-4 py-4 md:flex-row md:items-center md:justify-between">
+                  <div
+                    key={item.id}
+                    className="grid gap-3 rounded-xl border border-stone-200 bg-white px-4 py-4 md:grid-cols-[minmax(0,1fr)_minmax(14rem,28rem)_auto] md:items-center"
+                  >
                     <div className="min-w-0 space-y-2">
                       <div className="flex flex-wrap items-center gap-2">
                         <div className="truncate text-sm font-medium text-stone-800">{item.name}</div>
@@ -237,7 +226,26 @@ export function UserKeysCard() {
                       </div>
                     </div>
 
-                    <div className="flex items-center gap-2">
+                    <div className="flex min-w-0 items-center gap-2 rounded-lg border border-stone-200 bg-stone-50 px-3 py-2 text-xs text-stone-500">
+                      <span className="shrink-0">密钥</span>
+                      <code className="min-w-0 flex-1 truncate font-mono text-[12px] text-stone-700">
+                        {revealedKey || "••••••••••••••••••••••••"}
+                      </code>
+                      {revealedKey ? (
+                        <Button
+                          type="button"
+                          variant="ghost"
+                          size="icon"
+                          className="size-7 rounded-lg text-stone-500 hover:bg-stone-200 hover:text-stone-800"
+                          onClick={() => void handleCopy(revealedKey)}
+                          aria-label="复制用户密钥"
+                        >
+                          <Copy className="size-3.5" />
+                        </Button>
+                      ) : null}
+                    </div>
+
+                    <div className="flex flex-wrap items-center gap-2 md:justify-end">
                       <Button
                         type="button"
                         variant="outline"
@@ -245,8 +253,14 @@ export function UserKeysCard() {
                         onClick={() => void handleReveal(item)}
                         disabled={isRevealing}
                       >
-                        {isRevealing ? <LoaderCircle className="size-4 animate-spin" /> : <Eye className="size-4" />}
-                        查看
+                        {isRevealing ? (
+                          <LoaderCircle className="size-4 animate-spin" />
+                        ) : revealedKey ? (
+                          <EyeOff className="size-4" />
+                        ) : (
+                          <Eye className="size-4" />
+                        )}
+                        {revealedKey ? "隐藏" : "查看"}
                       </Button>
                       <Button
                         type="button"

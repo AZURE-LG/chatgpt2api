@@ -104,9 +104,9 @@ func TestImageModelSlugSupportsSelection(t *testing.T) {
 		model string
 		want  string
 	}{
-		{model: "", want: "auto"},
-		{model: "auto", want: "auto"},
-		{model: "gpt-image-2", want: "gpt-5-3"},
+		{model: "", want: "gpt-image-2"},
+		{model: "auto", want: "gpt-image-2"},
+		{model: "gpt-image-2", want: "gpt-image-2"},
 		{model: "codex-gpt-image-2", want: "codex-gpt-image-2"},
 		{model: "gpt-5", want: "gpt-5"},
 		{model: "gpt-5-3-mini", want: "gpt-5-3-mini"},

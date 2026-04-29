@@ -343,7 +343,12 @@ function ImageManagerContent() {
                       containIntrinsicSize: item.width && item.height ? `${Math.min(360, item.width)}px ${Math.min(480, item.height)}px` : "320px 320px",
                     }}
                   >
-                    <div className="block w-full overflow-hidden">
+                    <button
+                      type="button"
+                      onClick={() => toggleImageSelection(item)}
+                      className="block w-full cursor-pointer overflow-hidden text-left"
+                      aria-label={selected ? "取消选择图片" : "选择图片"}
+                    >
                       <img
                         src={item.thumbnail_url || item.url}
                         alt={item.name}
@@ -354,7 +359,7 @@ function ImageManagerContent() {
                         sizes="(min-width: 1280px) 25vw, (min-width: 1024px) 33vw, (min-width: 640px) 50vw, 100vw"
                         className="block h-auto w-full transition duration-200 group-hover:brightness-95"
                       />
-                    </div>
+                    </button>
                     <button
                       type="button"
                       onClick={() => toggleImageSelection(item)}

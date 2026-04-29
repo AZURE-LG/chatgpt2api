@@ -713,10 +713,10 @@ func (c *Client) imageHeaders(path string, reqs ChatRequirements, conduitToken, 
 func (c *Client) imageModelSlug(model string) string {
 	model = strings.TrimSpace(model)
 	if model == "" || model == util.ImageModelAuto {
-		return "auto"
+		return util.ImageModelGPT
 	}
 	if model == util.ImageModelGPT {
-		return "gpt-5-3"
+		return util.ImageModelGPT
 	}
 	if model == CodexImageModel {
 		return model

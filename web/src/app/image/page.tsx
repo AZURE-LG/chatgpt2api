@@ -1556,8 +1556,8 @@ function ImagePageContent({ isAdmin }: { isAdmin: boolean }) {
         toast.error("请输入提示词");
         return;
       }
-      if (targetImage.status !== "error") {
-        toast.error("只有失败图片可以单独重试");
+      if (targetImage.status !== "error" && targetImage.status !== "message") {
+        toast.error("只有失败图片或模型文本回复可以单独重试");
         return;
       }
       if (usesReferenceImages(targetTurn.mode) && targetTurn.referenceImages.length === 0) {
@@ -1587,6 +1587,7 @@ function ImagePageContent({ isAdmin }: { isAdmin: boolean }) {
                       b64_json: undefined,
                       url: undefined,
                       revised_prompt: undefined,
+                      text_response: undefined,
                       error: undefined,
                     }
                   : image,
@@ -1601,7 +1602,7 @@ function ImagePageContent({ isAdmin }: { isAdmin: boolean }) {
           };
         });
         void runConversationQueue(conversationId);
-        toast.success("失败图片已加入重试队列");
+        toast.success("已加入重试队列");
       } catch (error) {
         toast.error(formatImageTaskError(error, "提交重试失败"));
       } finally {
