@@ -54,7 +54,7 @@ func TestImageServiceListImagesReturnsEmptyArrays(t *testing.T) {
 	}
 }
 
-func TestImageServiceCreatesWebPThumbnails(t *testing.T) {
+func TestImageServiceListImagesDoesNotGenerateThumbnailsSynchronously(t *testing.T) {
 	root := t.TempDir()
 	config := testImageConfig{root: root}
 	imagePath := filepath.Join(config.ImagesDir(), "2026", "04", "29", "sample.png")
@@ -78,9 +78,34 @@ func TestImageServiceCreatesWebPThumbnails(t *testing.T) {
 	if !strings.HasSuffix(thumbnailURL, ".webp") {
 		t.Fatalf("thumbnail_url = %q, want .webp suffix", thumbnailURL)
 	}
+	if items[0]["width"] != nil || items[0]["height"] != nil {
+		t.Fatalf("ListImages() generated image dimensions synchronously: %#v", items[0])
+	}
+	thumbPath := filepath.Join(config.ImageThumbnailsDir(), "2026", "04", "29", "sample.png.webp")
+	if _, err := os.Stat(thumbPath); !os.IsNotExist(err) {
+		t.Fatalf("ListImages() should not create thumbnail synchronously, stat error = %v", err)
+	}
+}
 
-	rel := strings.TrimPrefix(thumbnailURL, "http://127.0.0.1:8000/image-thumbnails/")
-	thumbPath := filepath.Join(config.ImageThumbnailsDir(), filepath.FromSlash(rel))
+func TestImageServiceEnsureThumbnailCreatesWebPThumbnails(t *testing.T) {
+	root := t.TempDir()
+	config := testImageConfig{root: root}
+	imagePath := filepath.Join(config.ImagesDir(), "2026", "04", "29", "sample.png")
+	if err := os.MkdirAll(filepath.Dir(imagePath), 0o755); err != nil {
+		t.Fatalf("MkdirAll() error = %v", err)
+	}
+	if err := writeTestPNG(imagePath); err != nil {
+		t.Fatalf("writeTestPNG() error = %v", err)
+	}
+
+	service := NewImageService(config)
+	thumb := service.ensureThumbnail(imagePath, "2026/04/29/sample.png")
+	thumbnailRel := toString(thumb["thumbnail_rel"])
+	if !strings.HasSuffix(thumbnailRel, ".webp") {
+		t.Fatalf("thumbnail_rel = %q, want .webp suffix", thumbnailRel)
+	}
+
+	thumbPath := filepath.Join(config.ImageThumbnailsDir(), filepath.FromSlash(thumbnailRel))
 	file, err := os.Open(thumbPath)
 	if err != nil {
 		t.Fatalf("open thumbnail: %v", err)
@@ -121,7 +146,7 @@ func TestImageServiceDeleteImagesRemovesOriginalAndThumbnail(t *testing.T) {
 	}
 
 	service := NewImageService(config)
-	service.ListImages("http://127.0.0.1:8000", "", "", allImages)
+	service.ensureThumbnail(imagePath, "2026/04/29/sample.png")
 	thumbPath := filepath.Join(config.ImageThumbnailsDir(), "2026", "04", "29", "sample.png.webp")
 	if _, err := os.Stat(thumbPath); err != nil {
 		t.Fatalf("thumbnail was not created: %v", err)

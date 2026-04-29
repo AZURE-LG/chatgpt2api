@@ -428,6 +428,61 @@ func TestImageManagementIsScopedByOwner(t *testing.T) {
 	}
 }
 
+func TestImageThumbnailsAreGeneratedOnDemand(t *testing.T) {
+	app := newTestApp(t)
+	defer app.Close()
+
+	rel := "2026/04/29/sample.png"
+	imagePath := filepath.Join(app.config.ImagesDir(), filepath.FromSlash(rel))
+	if err := os.MkdirAll(filepath.Dir(imagePath), 0o755); err != nil {
+		t.Fatalf("mkdir image dir: %v", err)
+	}
+	if err := writeHTTPTestPNG(imagePath); err != nil {
+		t.Fatalf("write image: %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/api/images", nil)
+	req.Header.Set("Authorization", "Bearer admin-secret")
+	res := httptest.NewRecorder()
+	app.Handler().ServeHTTP(res, req)
+	if res.Code != http.StatusOK {
+		t.Fatalf("/api/images status = %d body = %s", res.Code, res.Body.String())
+	}
+	var list map[string]any
+	if err := json.Unmarshal(res.Body.Bytes(), &list); err != nil {
+		t.Fatalf("/api/images json: %v", err)
+	}
+	items := logItems(list)
+	if len(items) != 1 {
+		t.Fatalf("/api/images items = %#v", list)
+	}
+	thumbnailURL, _ := items[0]["thumbnail_url"].(string)
+	if !strings.Contains(thumbnailURL, "/image-thumbnails/") {
+		t.Fatalf("thumbnail_url = %q, want lazy thumbnail route", thumbnailURL)
+	}
+	parsedThumbnailURL, err := url.Parse(thumbnailURL)
+	if err != nil {
+		t.Fatalf("parse thumbnail URL: %v", err)
+	}
+	thumbPath := filepath.Join(app.config.ImageThumbnailsDir(), filepath.FromSlash(rel)+".webp")
+	if _, err := os.Stat(thumbPath); !os.IsNotExist(err) {
+		t.Fatalf("/api/images should not create thumbnail synchronously, stat error = %v", err)
+	}
+
+	req = httptest.NewRequest(http.MethodGet, parsedThumbnailURL.Path, nil)
+	res = httptest.NewRecorder()
+	app.Handler().ServeHTTP(res, req)
+	if res.Code != http.StatusOK {
+		t.Fatalf("thumbnail status = %d body = %s", res.Code, res.Body.String())
+	}
+	if res.Body.Len() == 0 {
+		t.Fatal("thumbnail body is empty")
+	}
+	if _, err := os.Stat(thumbPath); err != nil {
+		t.Fatalf("thumbnail was not created on demand: %v", err)
+	}
+}
+
 func TestLinuxDoUserCanManageOwnKeys(t *testing.T) {
 	app := newTestApp(t)
 	defer app.Close()

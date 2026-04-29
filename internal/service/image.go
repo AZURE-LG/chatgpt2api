@@ -7,6 +7,7 @@ import (
 	"image/color"
 	"image/draw"
 	_ "image/gif"
+	_ "image/jpeg"
 	_ "image/png"
 	"net/url"
 	"os"
@@ -24,6 +25,7 @@ import (
 const (
 	ThumbnailSize         = 720
 	thumbnailCacheVersion = 2
+	thumbnailExtension    = ".webp"
 )
 
 type ImageConfig interface {
@@ -79,7 +81,7 @@ func (s *ImageService) ListImages(baseURL, startDate, endDate string, scope Imag
 		if !scope.All && (scope.OwnerID == "" || ownerID != scope.OwnerID) {
 			return nil
 		}
-		thumb := s.ensureThumbnail(path, rel)
+		thumb := s.thumbnailInfo(path, rel)
 		item := map[string]any{
 			"name":       filepath.Base(path),
 			"path":       rel,
@@ -210,8 +212,58 @@ func (s *ImageService) RecordImageOwners(values []string, ownerID string) {
 	}
 }
 
+func (s *ImageService) SourceImageRelativePathFromThumbnail(thumbnailRel string) (string, error) {
+	return sourceImageRelativePathFromThumbnail(thumbnailRel)
+}
+
+func (s *ImageService) EnsureThumbnail(thumbnailRel string) error {
+	sourceRel, err := s.SourceImageRelativePathFromThumbnail(thumbnailRel)
+	if err != nil {
+		return err
+	}
+	imageRoot, err := filepath.Abs(s.config.ImagesDir())
+	if err != nil {
+		return err
+	}
+	sourcePath := filepath.Join(imageRoot, filepath.FromSlash(sourceRel))
+	if !pathInsideRoot(imageRoot, sourcePath) {
+		return errors.New("invalid image path")
+	}
+	info, err := os.Stat(sourcePath)
+	if err != nil {
+		return err
+	}
+	if info.IsDir() {
+		return errors.New("image path is not a file")
+	}
+	thumb := s.ensureThumbnail(sourcePath, sourceRel)
+	if toString(thumb["thumbnail_rel"]) == "" {
+		return errors.New("thumbnail unavailable")
+	}
+	return nil
+}
+
+func (s *ImageService) thumbnailInfo(sourcePath, rel string) map[string]any {
+	thumbPath := s.thumbnailPath(rel)
+	thumbRel := thumbnailRelativePath(s.config.ImageThumbnailsDir(), thumbPath)
+	result := map[string]any{"thumbnail_rel": thumbRel}
+	sourceInfo, err := os.Stat(sourcePath)
+	if err != nil {
+		return result
+	}
+	if thumbInfo, err := os.Stat(thumbPath); err == nil && !thumbInfo.ModTime().Before(sourceInfo.ModTime()) {
+		meta := s.readThumbnailMetadata(rel, thumbPath+".json", sourceInfo.ModTime())
+		if isCurrentThumbnailMetadata(meta) {
+			for key, value := range meta {
+				result[key] = value
+			}
+		}
+	}
+	return result
+}
+
 func (s *ImageService) ensureThumbnail(sourcePath, rel string) map[string]any {
-	thumbPath := filepath.Join(s.config.ImageThumbnailsDir(), filepath.FromSlash(rel)+".webp")
+	thumbPath := s.thumbnailPath(rel)
 	metaPath := thumbPath + ".json"
 	sourceInfo, err := os.Stat(sourcePath)
 	if err != nil {
@@ -220,7 +272,7 @@ func (s *ImageService) ensureThumbnail(sourcePath, rel string) map[string]any {
 	if thumbInfo, err := os.Stat(thumbPath); err == nil && !thumbInfo.ModTime().Before(sourceInfo.ModTime()) {
 		meta := s.readThumbnailMetadata(rel, metaPath, sourceInfo.ModTime())
 		if isCurrentThumbnailMetadata(meta) {
-			result := map[string]any{"thumbnail_rel": filepath.ToSlash(strings.TrimPrefix(strings.TrimPrefix(thumbPath, s.config.ImageThumbnailsDir()), string(filepath.Separator)))}
+			result := map[string]any{"thumbnail_rel": thumbnailRelativePath(s.config.ImageThumbnailsDir(), thumbPath)}
 			for key, value := range meta {
 				result[key] = value
 			}
@@ -258,7 +310,11 @@ func (s *ImageService) ensureThumbnail(sourcePath, rel string) map[string]any {
 		"thumbnail_size":    ThumbnailSize,
 		"thumbnail_version": thumbnailCacheVersion,
 	})
-	return map[string]any{"thumbnail_rel": filepath.ToSlash(strings.TrimPrefix(strings.TrimPrefix(thumbPath, s.config.ImageThumbnailsDir()), string(filepath.Separator))), "width": width, "height": height}
+	return map[string]any{"thumbnail_rel": thumbnailRelativePath(s.config.ImageThumbnailsDir(), thumbPath), "width": width, "height": height}
+}
+
+func (s *ImageService) thumbnailPath(rel string) string {
+	return filepath.Join(s.config.ImageThumbnailsDir(), filepath.FromSlash(rel)+thumbnailExtension)
 }
 
 func (s *ImageService) imageOwner(rel string) string {
@@ -369,6 +425,25 @@ func imageOwnerDocumentName(rel string) string {
 
 func thumbnailMetadataDocumentName(rel string) string {
 	return "image_thumbnails/" + filepath.ToSlash(rel) + ".webp.json"
+}
+
+func sourceImageRelativePathFromThumbnail(value string) (string, error) {
+	thumbnailRel, err := cleanImageRelativePath(value)
+	if err != nil {
+		return "", err
+	}
+	if !strings.HasSuffix(thumbnailRel, thumbnailExtension) {
+		return "", errors.New("invalid thumbnail path")
+	}
+	return cleanImageRelativePath(strings.TrimSuffix(thumbnailRel, thumbnailExtension))
+}
+
+func thumbnailRelativePath(root, thumbPath string) string {
+	rel, err := filepath.Rel(root, thumbPath)
+	if err != nil {
+		return ""
+	}
+	return filepath.ToSlash(rel)
 }
 
 func publicAssetURL(baseURL, prefix, rel string) string {

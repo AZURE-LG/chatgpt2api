@@ -13,6 +13,7 @@ import (
 	"io"
 	"mime/multipart"
 	"net/http"
+	"net/url"
 	"os"
 	"path"
 	"path/filepath"
@@ -170,7 +171,7 @@ func (a *App) serveHTTP(w http.ResponseWriter, r *http.Request) {
 	case strings.HasPrefix(path, "/images/"):
 		http.StripPrefix("/images/", http.FileServer(http.Dir(a.config.ImagesDir()))).ServeHTTP(w, r)
 	case strings.HasPrefix(path, "/image-thumbnails/"):
-		http.StripPrefix("/image-thumbnails/", http.FileServer(http.Dir(a.config.ImageThumbnailsDir()))).ServeHTTP(w, r)
+		a.handleImageThumbnail(w, r)
 	case strings.HasPrefix(path, "/login-page-images/"):
 		http.StripPrefix("/login-page-images/", http.FileServer(http.Dir(a.config.LoginPageImagesDir()))).ServeHTTP(w, r)
 	default:
@@ -615,6 +616,47 @@ func (a *App) handleImages(w http.ResponseWriter, r *http.Request) {
 	default:
 		w.WriteHeader(http.StatusMethodNotAllowed)
 	}
+}
+
+func (a *App) handleImageThumbnail(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet && r.Method != http.MethodHead {
+		w.WriteHeader(http.StatusMethodNotAllowed)
+		return
+	}
+	thumbnailRel, err := imageThumbnailRequestPath(r)
+	if err != nil {
+		http.NotFound(w, r)
+		return
+	}
+	sourceRel, sourceErr := a.images.SourceImageRelativePathFromThumbnail(thumbnailRel)
+	if sourceErr == nil {
+		_ = a.images.EnsureThumbnail(thumbnailRel)
+	}
+	thumbPath := filepath.Join(a.config.ImageThumbnailsDir(), filepath.FromSlash(thumbnailRel))
+	if info, err := os.Stat(thumbPath); err == nil && !info.IsDir() {
+		http.ServeFile(w, r, thumbPath)
+		return
+	}
+	if sourceErr == nil {
+		sourcePath := filepath.Join(a.config.ImagesDir(), filepath.FromSlash(sourceRel))
+		if info, err := os.Stat(sourcePath); err == nil && !info.IsDir() {
+			http.ServeFile(w, r, sourcePath)
+			return
+		}
+	}
+	http.NotFound(w, r)
+}
+
+func imageThumbnailRequestPath(r *http.Request) (string, error) {
+	raw := strings.TrimPrefix(r.URL.EscapedPath(), "/image-thumbnails/")
+	if raw == "" || raw == r.URL.EscapedPath() {
+		return "", errors.New("invalid thumbnail path")
+	}
+	rel, err := url.PathUnescape(raw)
+	if err != nil {
+		return "", err
+	}
+	return rel, nil
 }
 
 func (a *App) handleLogs(w http.ResponseWriter, r *http.Request) {
