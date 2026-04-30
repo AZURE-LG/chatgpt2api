@@ -59,7 +59,7 @@ func (a *App) routes() []appRoute {
 		subtree("/api/accounts", a.handleAccounts),
 		subtree("/api/cpa/pools", a.handleCPA),
 		subtree("/api/sub2api/servers", a.handleSub2API),
-		subtree("/api/image-tasks", a.handleImageTasks),
+		subtree("/api/creation-tasks", a.handleCreationTasks),
 		subtree("/api/register", a.handleRegister),
 		exact("", "/api/settings", a.handleSettings),
 		exact("", "/api/settings/login-page-image", a.handleLoginPageImageSettings),

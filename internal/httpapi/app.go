@@ -87,13 +87,13 @@ func NewApp() (*App, error) {
 	app.register = service.NewRegisterService(cfg.DataDir, accounts, storageBackend)
 	app.tasks = service.NewStoredImageTaskService(filepath.Join(cfg.DataDir, "image_tasks.json"), storageBackend,
 		func(ctx context.Context, identity service.Identity, payload map[string]any) (map[string]any, error) {
-			return app.runLoggedImageTask(ctx, identity, payload, "/api/image-tasks/generations", "文生图", func(ctx context.Context, payload map[string]any) (map[string]any, error) {
+			return app.runLoggedImageTask(ctx, identity, payload, "/api/creation-tasks/image-generations", "文生图", func(ctx context.Context, payload map[string]any) (map[string]any, error) {
 				result, _, err := engine.HandleImageGenerations(ctx, payload)
 				return result, err
 			})
 		},
 		func(ctx context.Context, identity service.Identity, payload map[string]any) (map[string]any, error) {
-			return app.runLoggedImageTask(ctx, identity, payload, "/api/image-tasks/edits", "图生图", func(ctx context.Context, payload map[string]any) (map[string]any, error) {
+			return app.runLoggedImageTask(ctx, identity, payload, "/api/creation-tasks/image-edits", "图生图", func(ctx context.Context, payload map[string]any) (map[string]any, error) {
 				images, _ := payload["images"].([]protocol.UploadedImage)
 				result, _, err := engine.HandleImageEdits(ctx, payload, images)
 				return result, err
@@ -1082,16 +1082,16 @@ func (a *App) runLoggedChatTask(ctx context.Context, identity service.Identity, 
 		err = errors.New("chat task streaming is not supported")
 	}
 	if err != nil {
-		a.logCall(identity, "文本生成", "/api/image-tasks/chat", model, start, "failed", err.Error(), nil)
+		a.logCall(identity, "文本生成", "/api/creation-tasks/chat-completions", model, start, "failed", err.Error(), nil)
 		return result, err
 	}
 	text := chatCompletionResultText(result)
 	if text == "" {
 		err = errors.New("模型没有返回文本内容")
-		a.logCall(identity, "文本生成", "/api/image-tasks/chat", model, start, "failed", err.Error(), nil)
+		a.logCall(identity, "文本生成", "/api/creation-tasks/chat-completions", model, start, "failed", err.Error(), nil)
 		return result, err
 	}
-	a.logCall(identity, "文本生成", "/api/image-tasks/chat", model, start, "success", "", nil)
+	a.logCall(identity, "文本生成", "/api/creation-tasks/chat-completions", model, start, "success", "", nil)
 	return map[string]any{
 		"created":     result["created"],
 		"output_type": "text",

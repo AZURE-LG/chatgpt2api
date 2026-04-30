@@ -466,7 +466,7 @@ func logQuotaUsed(detail map[string]any, status string) int {
 	}
 	endpoint := util.Clean(detail["endpoint"])
 	switch endpoint {
-	case "/v1/images/generations", "/v1/images/edits", "/api/image-tasks/generations", "/api/image-tasks/edits":
+	case "/v1/images/generations", "/v1/images/edits", "/api/creation-tasks/image-generations", "/api/creation-tasks/image-edits":
 		return 1
 	default:
 		return 0

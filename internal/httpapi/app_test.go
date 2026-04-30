@@ -335,7 +335,7 @@ func TestProfileAccountNameAndPasswordUpdates(t *testing.T) {
 	}
 }
 
-func TestImageTaskFailureWritesCallLog(t *testing.T) {
+func TestCreationTaskFailureWritesCallLog(t *testing.T) {
 	app := newTestApp(t)
 	defer app.Close()
 
@@ -344,12 +344,12 @@ func TestImageTaskFailureWritesCallLog(t *testing.T) {
 		t.Fatalf("CreateAPIKey() error = %v", err)
 	}
 
-	req := httptest.NewRequest(http.MethodPost, "/api/image-tasks/generations", strings.NewReader(`{"client_task_id":"task-log-test","prompt":"test image"}`))
+	req := httptest.NewRequest(http.MethodPost, "/api/creation-tasks/image-generations", strings.NewReader(`{"client_task_id":"task-log-test","prompt":"test image"}`))
 	req.Header.Set("Authorization", "Bearer "+rawKey)
 	res := httptest.NewRecorder()
 	app.Handler().ServeHTTP(res, req)
 	if res.Code != http.StatusOK {
-		t.Fatalf("submit image task status = %d body = %s", res.Code, res.Body.String())
+		t.Fatalf("submit creation task status = %d body = %s", res.Code, res.Body.String())
 	}
 
 	var logs map[string]any
@@ -372,14 +372,14 @@ func TestImageTaskFailureWritesCallLog(t *testing.T) {
 	}
 	items := logItems(logs)
 	if len(items) == 0 {
-		t.Fatalf("expected image task failure to write a call log, got %#v", logs)
+		t.Fatalf("expected creation task failure to write a call log, got %#v", logs)
 	}
 	item := items[0]
 	if item["type"] != "call" || item["summary"] != "文生图调用失败" {
 		t.Fatalf("unexpected call log item: %#v", item)
 	}
 	detail, _ := item["detail"].(map[string]any)
-	if detail["endpoint"] != "/api/image-tasks/generations" || detail["status"] != "failed" {
+	if detail["endpoint"] != "/api/creation-tasks/image-generations" || detail["status"] != "failed" {
 		t.Fatalf("unexpected call log detail: %#v", detail)
 	}
 	if detail["key_name"] != "frontend" || detail["key_role"] != "user" {
@@ -1103,7 +1103,7 @@ func TestAdminUsersManageLinuxDoUsers(t *testing.T) {
 	app.logs.Add(service.LogTypeCall, "图生图调用完成", map[string]any{
 		"key_id":   localID,
 		"status":   "success",
-		"endpoint": "/api/image-tasks/edits",
+		"endpoint": "/api/creation-tasks/image-edits",
 	})
 
 	req := httptest.NewRequest(http.MethodGet, "/api/admin/users", nil)
@@ -1388,7 +1388,7 @@ func TestLinuxDoOAuthCallbackCreatesSession(t *testing.T) {
 	}
 }
 
-func TestImageTaskPollingDisablesCaching(t *testing.T) {
+func TestCreationTaskPollingDisablesCaching(t *testing.T) {
 	app := newTestApp(t)
 	defer app.Close()
 
@@ -1397,12 +1397,12 @@ func TestImageTaskPollingDisablesCaching(t *testing.T) {
 		t.Fatalf("CreateAPIKey() error = %v", err)
 	}
 
-	req := httptest.NewRequest(http.MethodGet, "/api/image-tasks?ids=missing", nil)
+	req := httptest.NewRequest(http.MethodGet, "/api/creation-tasks?ids=missing", nil)
 	req.Header.Set("Authorization", "Bearer "+rawKey)
 	res := httptest.NewRecorder()
 	app.Handler().ServeHTTP(res, req)
 	if res.Code != http.StatusOK {
-		t.Fatalf("image task list status = %d body = %s", res.Code, res.Body.String())
+		t.Fatalf("creation task list status = %d body = %s", res.Code, res.Body.String())
 	}
 	if got := res.Header().Get("Cache-Control"); got != "no-store" {
 		t.Fatalf("Cache-Control = %q, want no-store", got)

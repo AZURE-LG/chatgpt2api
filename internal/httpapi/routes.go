@@ -796,7 +796,7 @@ func (a *App) handleSub2API(w http.ResponseWriter, r *http.Request) {
 	http.NotFound(w, r)
 }
 
-func (a *App) handleImageTasks(w http.ResponseWriter, r *http.Request) {
+func (a *App) handleCreationTasks(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Cache-Control", "no-store")
 	w.Header().Set("Pragma", "no-cache")
 	identity, ok := a.requireIdentity(w, r, "")
@@ -804,11 +804,11 @@ func (a *App) handleImageTasks(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	parts := splitPath(r.URL.Path)
-	if r.URL.Path == "/api/image-tasks" && r.Method == http.MethodGet {
+	if r.URL.Path == "/api/creation-tasks" && r.Method == http.MethodGet {
 		util.WriteJSON(w, http.StatusOK, a.tasks.ListTasks(identity, util.ParseCommaList(r.URL.Query().Get("ids"))))
 		return
 	}
-	if len(parts) == 4 && parts[0] == "api" && parts[1] == "image-tasks" && parts[3] == "cancel" {
+	if len(parts) == 4 && parts[0] == "api" && parts[1] == "creation-tasks" && parts[3] == "cancel" {
 		if r.Method != http.MethodPost {
 			w.WriteHeader(http.StatusMethodNotAllowed)
 			return
@@ -821,27 +821,27 @@ func (a *App) handleImageTasks(w http.ResponseWriter, r *http.Request) {
 		util.WriteJSON(w, http.StatusOK, task)
 		return
 	}
-	if r.URL.Path == "/api/image-tasks/generations" && r.Method == http.MethodPost {
+	if r.URL.Path == "/api/creation-tasks/image-generations" && r.Method == http.MethodPost {
 		body, _ := readJSONMap(r)
 		task, err := a.tasks.SubmitGeneration(r.Context(), identity, util.Clean(body["client_task_id"]), util.Clean(body["prompt"]), firstNonEmpty(util.Clean(body["model"]), util.ImageModelAuto), util.Clean(body["size"]), util.Clean(body["quality"]), a.resolveImageBaseURL(r), util.ToInt(body["n"], 1), body["messages"], util.Clean(body["visibility"]))
 		if err != nil {
-			writeImageTaskSubmitError(w, err)
+			writeCreationTaskSubmitError(w, err)
 			return
 		}
 		util.WriteJSON(w, http.StatusOK, task)
 		return
 	}
-	if r.URL.Path == "/api/image-tasks/chat" && r.Method == http.MethodPost {
+	if r.URL.Path == "/api/creation-tasks/chat-completions" && r.Method == http.MethodPost {
 		body, _ := readJSONMap(r)
 		task, err := a.tasks.SubmitChat(r.Context(), identity, util.Clean(body["client_task_id"]), util.Clean(body["prompt"]), firstNonEmpty(util.Clean(body["model"]), util.ImageModelAuto), body["messages"])
 		if err != nil {
-			writeImageTaskSubmitError(w, err)
+			writeCreationTaskSubmitError(w, err)
 			return
 		}
 		util.WriteJSON(w, http.StatusOK, task)
 		return
 	}
-	if r.URL.Path == "/api/image-tasks/edits" && r.Method == http.MethodPost {
+	if r.URL.Path == "/api/creation-tasks/image-edits" && r.Method == http.MethodPost {
 		body, images, err := readMultipartImageBody(r)
 		if err != nil {
 			util.WriteError(w, http.StatusBadRequest, err.Error())
@@ -849,7 +849,7 @@ func (a *App) handleImageTasks(w http.ResponseWriter, r *http.Request) {
 		}
 		task, err := a.tasks.SubmitEdit(r.Context(), identity, util.Clean(body["client_task_id"]), util.Clean(body["prompt"]), firstNonEmpty(util.Clean(body["model"]), util.ImageModelAuto), util.Clean(body["size"]), util.Clean(body["quality"]), a.resolveImageBaseURL(r), images, util.ToInt(body["n"], 1), body["messages"], util.Clean(body["visibility"]))
 		if err != nil {
-			writeImageTaskSubmitError(w, err)
+			writeCreationTaskSubmitError(w, err)
 			return
 		}
 		util.WriteJSON(w, http.StatusOK, task)
@@ -858,7 +858,7 @@ func (a *App) handleImageTasks(w http.ResponseWriter, r *http.Request) {
 	http.NotFound(w, r)
 }
 
-func writeImageTaskSubmitError(w http.ResponseWriter, err error) {
+func writeCreationTaskSubmitError(w http.ResponseWriter, err error) {
 	var limitErr service.ImageTaskLimitError
 	if errors.As(err, &limitErr) {
 		util.WriteError(w, http.StatusTooManyRequests, limitErr.Error())

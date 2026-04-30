@@ -201,7 +201,7 @@ export type ImageResponse = {
   data: Array<{ b64_json?: string; url?: string; revised_prompt?: string }>;
 };
 
-export type ImageTask = {
+export type CreationTask = {
   id: string;
   status: "queued" | "running" | "success" | "error" | "cancelled";
   mode: "generate" | "edit" | "chat";
@@ -216,7 +216,7 @@ export type ImageTask = {
   visibility?: ImageVisibility;
 };
 
-export type ImageTaskMessage = {
+export type CreationTaskMessage = {
   role: "system" | "user" | "assistant" | "tool";
   content: string;
 };
@@ -229,8 +229,8 @@ export type ChatCompletionResponse = {
   }>;
 };
 
-type ImageTaskListResponse = {
-  items?: ImageTask[] | null;
+type CreationTaskListResponse = {
+  items?: CreationTask[] | null;
   missing_ids?: string[] | null;
 };
 
@@ -549,10 +549,10 @@ export async function createImageGenerationTask(
   size?: string,
   quality?: ImageQuality,
   count = 1,
-  messages?: ImageTaskMessage[],
+  messages?: CreationTaskMessage[],
   visibility: ImageVisibility = "private",
 ) {
-  return httpRequest<ImageTask>("/api/image-tasks/generations", {
+  return httpRequest<CreationTask>("/api/creation-tasks/image-generations", {
     method: "POST",
     body: {
       client_task_id: clientTaskId,
@@ -575,7 +575,7 @@ export async function createImageEditTask(
   size?: string,
   quality?: ImageQuality,
   count = 1,
-  messages?: ImageTaskMessage[],
+  messages?: CreationTaskMessage[],
   visibility: ImageVisibility = "private",
 ) {
   const formData = new FormData();
@@ -601,19 +601,19 @@ export async function createImageEditTask(
   formData.append("visibility", visibility);
   formData.append("n", String(count));
 
-  return httpRequest<ImageTask>("/api/image-tasks/edits", {
+  return httpRequest<CreationTask>("/api/creation-tasks/image-edits", {
     method: "POST",
     body: formData,
   });
 }
 
-export async function createChatTask(
+export async function createChatCompletionTask(
   clientTaskId: string,
   prompt: string,
   model: ImageModel,
-  messages: ImageTaskMessage[],
+  messages: CreationTaskMessage[],
 ) {
-  return httpRequest<ImageTask>("/api/image-tasks/chat", {
+  return httpRequest<CreationTask>("/api/creation-tasks/chat-completions", {
     method: "POST",
     body: {
       client_task_id: clientTaskId,
@@ -624,7 +624,7 @@ export async function createChatTask(
   });
 }
 
-export async function createChatCompletion(model: ImageModel, messages: ImageTaskMessage[]) {
+export async function createChatCompletion(model: ImageModel, messages: CreationTaskMessage[]) {
   return httpRequest<ChatCompletionResponse>("/v1/chat/completions", {
     method: "POST",
     body: {
@@ -635,12 +635,12 @@ export async function createChatCompletion(model: ImageModel, messages: ImageTas
   });
 }
 
-export async function fetchImageTasks(ids: string[]) {
+export async function fetchCreationTasks(ids: string[]) {
   const params = new URLSearchParams();
   if (ids.length > 0) {
     params.set("ids", ids.join(","));
   }
-  const data = await httpRequest<ImageTaskListResponse>(`/api/image-tasks${params.toString() ? `?${params.toString()}` : ""}`, {
+  const data = await httpRequest<CreationTaskListResponse>(`/api/creation-tasks${params.toString() ? `?${params.toString()}` : ""}`, {
     headers: {
       "Cache-Control": "no-cache",
       Pragma: "no-cache",
@@ -652,8 +652,8 @@ export async function fetchImageTasks(ids: string[]) {
   };
 }
 
-export async function cancelImageTask(clientTaskId: string) {
-  return httpRequest<ImageTask>(`/api/image-tasks/${encodeURIComponent(clientTaskId)}/cancel`, {
+export async function cancelCreationTask(clientTaskId: string) {
+  return httpRequest<CreationTask>(`/api/creation-tasks/${encodeURIComponent(clientTaskId)}/cancel`, {
     method: "POST",
     body: {},
   });

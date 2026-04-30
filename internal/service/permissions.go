@@ -48,8 +48,8 @@ var apiPermissionCatalog = []APIPermission{
 	apiPermission("POST", "/v1/chat/completions", "Chat Completions", "创作", false),
 	apiPermission("POST", "/v1/responses", "Responses", "创作", false),
 	apiPermission("POST", "/v1/messages", "Messages", "创作", false),
-	apiPermission("GET", "/api/image-tasks", "查看创作任务", "创作", true),
-	apiPermission("POST", "/api/image-tasks", "提交/取消创作任务", "创作", true),
+	apiPermission("GET", "/api/creation-tasks", "查看创作任务", "创作", true),
+	apiPermission("POST", "/api/creation-tasks", "提交/取消创作任务", "创作", true),
 	apiPermission("GET", "/api/images", "查看图片库", "图片库", false),
 	apiPermission("PATCH", "/api/images/visibility", "发布/收回图片", "图片库", false),
 	apiPermission("DELETE", "/api/images", "删除图片", "图片库", false),
@@ -132,8 +132,8 @@ func DefaultPermissionSetForRole(role string) PermissionSet {
 			APIPermissionKey("POST", "/v1/chat/completions"),
 			APIPermissionKey("POST", "/v1/responses"),
 			APIPermissionKey("POST", "/v1/messages"),
-			APIPermissionKey("GET", "/api/image-tasks"),
-			APIPermissionKey("POST", "/api/image-tasks"),
+			APIPermissionKey("GET", "/api/creation-tasks"),
+			APIPermissionKey("POST", "/api/creation-tasks"),
 			APIPermissionKey("GET", "/api/images"),
 			APIPermissionKey("PATCH", "/api/images/visibility"),
 			APIPermissionKey("GET", "/api/auth/users"),
@@ -232,14 +232,25 @@ func normalizeAPIPermissionKey(key string) string {
 	}
 	if strings.Contains(key, " ") {
 		method, path, _ := strings.Cut(key, " ")
-		return APIPermissionKey(method, path)
+		return migrateAPIPermissionKey(APIPermissionKey(method, path))
 	}
 	for _, method := range []string{"delete", "patch", "post", "put", "get"} {
 		if strings.HasPrefix(strings.ToLower(key), method+"/") {
-			return method + normalizePermissionPath(key[len(method):])
+			return migrateAPIPermissionKey(method + normalizePermissionPath(key[len(method):]))
 		}
 	}
-	return strings.ToLower(key)
+	return migrateAPIPermissionKey(strings.ToLower(key))
+}
+
+func migrateAPIPermissionKey(key string) string {
+	switch key {
+	case APIPermissionKey("GET", "/api/image-tasks"):
+		return APIPermissionKey("GET", "/api/creation-tasks")
+	case APIPermissionKey("POST", "/api/image-tasks"):
+		return APIPermissionKey("POST", "/api/creation-tasks")
+	default:
+		return key
+	}
 }
 
 func allMenuPaths() []string {

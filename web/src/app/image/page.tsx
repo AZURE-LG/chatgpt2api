@@ -32,14 +32,14 @@ import {
 } from "@/components/ui/select";
 import { Textarea } from "@/components/ui/textarea";
 import {
-  cancelImageTask,
+  cancelCreationTask,
   CHAT_MODEL_OPTIONS,
-  createChatTask,
+  createChatCompletionTask,
   createImageEditTask,
   createImageGenerationTask,
   DEFAULT_CHAT_MODEL,
   DEFAULT_IMAGE_MODEL,
-  fetchImageTasks,
+  fetchCreationTasks,
   IMAGE_TASK_MODEL_OPTIONS,
   isChatModel,
   isImageModel,
@@ -47,8 +47,8 @@ import {
   isImageTaskModel,
   type ImageModel,
   type ImageQuality,
-  type ImageTask,
-  type ImageTaskMessage,
+  type CreationTask,
+  type CreationTaskMessage,
   type ImageVisibility,
 } from "@/lib/api";
 import { cn } from "@/lib/utils";
@@ -263,7 +263,7 @@ function updateStoredImage(image: StoredImage, updates: Partial<StoredImage>): S
   return STORED_IMAGE_FIELDS.every((field) => image[field] === next[field]) ? image : next;
 }
 
-function taskDataToStoredImage(image: StoredImage, task: ImageTask, dataIndex = 0): StoredImage {
+function taskDataToStoredImage(image: StoredImage, task: CreationTask, dataIndex = 0): StoredImage {
   if (task.status === "success") {
     if (task.output_type === "text") {
       return updateStoredImage(image, {
@@ -330,7 +330,7 @@ function taskDataToStoredImage(image: StoredImage, task: ImageTask, dataIndex = 
       taskId: task.id,
       status: "error",
       text_response: undefined,
-      error: formatImageTaskErrorMessage(task.error || "生成失败"),
+      error: formatCreationTaskErrorMessage(task.error || "生成失败"),
     });
   }
 
@@ -411,7 +411,7 @@ function buildTurnOutcomeMessage(successCount: number, failedCount: number, canc
   return parts.join("，");
 }
 
-function formatImageTaskErrorMessage(message: string) {
+function formatCreationTaskErrorMessage(message: string) {
   const trimmed = String(message || "").trim();
   if (!trimmed) {
     return "生成图片失败";
@@ -441,8 +441,8 @@ function formatImageTaskErrorMessage(message: string) {
   return trimmed;
 }
 
-function formatImageTaskError(error: unknown, fallback = "生成图片失败") {
-  return formatImageTaskErrorMessage(error instanceof Error ? error.message : String(error || fallback));
+function formatCreationTaskError(error: unknown, fallback = "生成图片失败") {
+  return formatCreationTaskErrorMessage(error instanceof Error ? error.message : String(error || fallback));
 }
 
 function deriveTurnStatus(turn: ImageTurn): Pick<ImageTurn, "status" | "error"> {
@@ -499,8 +499,8 @@ function getComposerConversationMode(composerMode: ComposerMode, referenceImages
   return referenceImages.some((image) => image.source === "conversation") ? "edit" : "image";
 }
 
-function buildImageTaskMessages(conversation: ImageConversation, activeTurnId: string): ImageTaskMessage[] {
-  const messages: ImageTaskMessage[] = [];
+function buildCreationTaskMessages(conversation: ImageConversation, activeTurnId: string): CreationTaskMessage[] {
+  const messages: CreationTaskMessage[] = [];
   for (const turn of conversation.turns) {
     const prompt = turn.prompt.trim();
     if (prompt) {
@@ -526,7 +526,7 @@ function buildImageTaskMessages(conversation: ImageConversation, activeTurnId: s
   return messages;
 }
 
-async function syncConversationImageTasks(items: ImageConversation[]) {
+async function syncConversationCreationTasks(items: ImageConversation[]) {
   const taskIds = Array.from(
     new Set(
       items.flatMap((conversation) =>
@@ -540,9 +540,9 @@ async function syncConversationImageTasks(items: ImageConversation[]) {
     return items;
   }
 
-  let taskList: Awaited<ReturnType<typeof fetchImageTasks>>;
+  let taskList: Awaited<ReturnType<typeof fetchCreationTasks>>;
   try {
-    taskList = await fetchImageTasks(taskIds);
+    taskList = await fetchCreationTasks(taskIds);
   } catch {
     return items;
   }
@@ -687,7 +687,7 @@ async function recoverConversationHistory(items: ImageConversation[]) {
     await saveImageConversations(normalized);
   }
 
-  return syncConversationImageTasks(normalized);
+  return syncConversationCreationTasks(normalized);
 }
 
 
@@ -1373,7 +1373,7 @@ function ImagePageContent() {
             ? "正在整理上下文"
             : `准备处理 ${activeTurn.images.filter((image) => image.status === "loading").length || activeTurn.count} 张图片`,
       });
-      const applyTasks = async (tasks: ImageTask[]) => {
+      const applyTasks = async (tasks: CreationTask[]) => {
         const taskMap = new Map(tasks.map((task) => [task.id, task]));
         await updateConversation(conversationId, (current) => {
           const conversation = current ?? snapshot;
@@ -1453,7 +1453,7 @@ function ImagePageContent() {
         if (usesReferenceImages(activeTurn.mode) && referenceFiles.length === 0) {
           throw new Error("未找到可用的参考图");
         }
-        const taskMessages = buildImageTaskMessages(snapshot, activeTurn.id);
+        const taskMessages = buildCreationTaskMessages(snapshot, activeTurn.id);
         const pendingTaskGroups = activeTurn.images.reduce<Array<{ taskId: string; count: number }>>(
           (groups, image, imageIndex) => {
             if (image.status !== "loading") {
@@ -1472,7 +1472,7 @@ function ImagePageContent() {
         );
         const submitTaskGroup = (group: { taskId: string; count: number }) => {
           if (activeTurn.mode === "chat") {
-            return createChatTask(group.taskId, activeTurn.prompt, activeTurn.model, taskMessages);
+            return createChatCompletionTask(group.taskId, activeTurn.prompt, activeTurn.model, taskMessages);
           }
           if (usesReferenceImages(activeTurn.mode)) {
             return createImageEditTask(
@@ -1528,7 +1528,7 @@ function ImagePageContent() {
             detail: activeTurn.mode === "chat" ? "对话任务处理中" : `还有 ${loadingTaskIds.length} 张图片处理中`,
           });
           await sleep(2000);
-          const taskList = await fetchImageTasks(loadingTaskIds);
+          const taskList = await fetchCreationTasks(loadingTaskIds);
           if (taskList.items.length > 0) {
             await applyTasks(taskList.items);
           }
@@ -1556,7 +1556,7 @@ function ImagePageContent() {
           window.dispatchEvent(new Event(QUOTA_REFRESH_EVENT));
         }
       } catch (error) {
-        const message = formatImageTaskError(error, activeTurn.mode === "chat" ? "对话请求失败" : "生成图片失败");
+        const message = formatCreationTaskError(error, activeTurn.mode === "chat" ? "对话请求失败" : "生成图片失败");
         await updateConversation(conversationId, (current) => {
           const conversation = current ?? snapshot;
           return {
@@ -1659,7 +1659,7 @@ function ImagePageContent() {
         return;
       }
 
-      const results = await Promise.allSettled(taskIds.map((taskId) => cancelImageTask(taskId)));
+      const results = await Promise.allSettled(taskIds.map((taskId) => cancelCreationTask(taskId)));
       const taskMap = new Map(
         results.flatMap((result) => (result.status === "fulfilled" ? [[result.value.id, result.value] as const] : [])),
       );
@@ -1779,7 +1779,7 @@ function ImagePageContent() {
         void runConversationQueue(conversationId);
         toast.success("已加入重试队列");
       } catch (error) {
-        toast.error(formatImageTaskError(error, "提交重试失败"));
+        toast.error(formatCreationTaskError(error, "提交重试失败"));
       } finally {
         retryingImageIdsRef.current.delete(retryKey);
       }
@@ -2021,7 +2021,7 @@ function ImagePageContent() {
       if (draftProgressTarget) {
         clearTurnProgress(draftProgressTarget.conversationId, draftProgressTarget.turnId);
       }
-      toast.error(formatImageTaskError(error, "提交任务失败"));
+      toast.error(formatCreationTaskError(error, "提交任务失败"));
     } finally {
       isSubmitDispatchingRef.current = false;
     }

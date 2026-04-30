@@ -172,7 +172,7 @@ func (s *ImageTaskService) CancelTask(identity Identity, clientTaskID string) (m
 	task := s.tasks[key]
 	if task == nil {
 		s.mu.Unlock()
-		return nil, fmt.Errorf("image task not found")
+		return nil, fmt.Errorf("creation task not found")
 	}
 	if isActiveTaskStatus(util.Clean(task["status"])) {
 		task["status"] = TaskStatusCancelled
