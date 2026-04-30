@@ -26,7 +26,7 @@ import {
 } from "@/lib/api";
 import { formatImageFileSize } from "@/lib/image-size";
 import { useAuthGuard } from "@/lib/use-auth-guard";
-import type { StoredAuthSession } from "@/store/auth";
+import { hasAPIPermission, type StoredAuthSession } from "@/store/auth";
 
 function getManagedImageFormatLabel(item: ManagedImage) {
   const normalized = (item.name || item.url).split("?")[0]?.match(/\.([a-z0-9]+)$/i)?.[1] || "image";
@@ -828,10 +828,10 @@ function ImageManagerContent({
 }
 
 export default function ImageManagerPage() {
-  const { isCheckingAuth, session } = useAuthGuard(["admin", "user"]);
+  const { isCheckingAuth, session } = useAuthGuard(undefined, "/image-manager");
   if (isCheckingAuth || !session) {
     return <div className="flex min-h-[40vh] items-center justify-center"><LoaderCircle className="size-5 animate-spin text-stone-400" /></div>;
   }
-  const canDeleteImages = session.role === "admin";
+  const canDeleteImages = hasAPIPermission(session, "DELETE", "/api/images");
   return <ImageManagerContent cacheScope={imageManagerCacheScope(session)} canDeleteImages={canDeleteImages} />;
 }

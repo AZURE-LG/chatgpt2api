@@ -894,9 +894,9 @@ function AccountsPageContent() {
 }
 
 export default function AccountsPage() {
-  const { isCheckingAuth, session } = useAuthGuard(["admin"]);
+  const { isCheckingAuth, session } = useAuthGuard(undefined, "/accounts");
 
-  if (isCheckingAuth || !session || session.role !== "admin") {
+  if (isCheckingAuth || !session) {
     return (
       <div className="flex min-h-[40vh] items-center justify-center">
         <LoaderCircle className="size-5 animate-spin text-stone-400" />

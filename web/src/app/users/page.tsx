@@ -4,15 +4,14 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   Ban,
   CheckCircle2,
-  Copy,
-  Eye,
-  EyeOff,
+  KeyRound,
   LoaderCircle,
   Plus,
   RefreshCw,
-  RotateCcw,
   Search,
+  ShieldCheck,
   Trash2,
+  UserRound,
   X,
 } from "lucide-react";
 import { toast } from "sonner";
@@ -35,11 +34,12 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@
 import {
   createManagedUser,
   deleteManagedUser,
+  fetchManagedRoles,
   fetchManagedUsers,
-  resetManagedUserKey,
-  revealManagedUserKey,
   updateManagedUser,
+  type CreateManagedUserPayload,
   type ManagedUser,
+  type ManagedRole,
 } from "@/lib/api";
 import { useAuthGuard } from "@/lib/use-auth-guard";
 
@@ -64,6 +64,65 @@ function normalizeManagedUsers(items: ManagedUser[] | null | undefined) {
   return Array.isArray(items) ? items : [];
 }
 
+function normalizeManagedRoles(items: ManagedRole[] | null | undefined) {
+  return Array.isArray(items) ? items : [];
+}
+
+type CreateUserForm = {
+  username: string;
+  name: string;
+  password: string;
+  confirmPassword: string;
+  role_id: string;
+  enabled: boolean;
+};
+
+type CreateUserErrors = Partial<Record<"username" | "password" | "confirmPassword", string>>;
+
+const accountUsernamePattern = /^[a-z0-9][a-z0-9_.-]{2,31}$/;
+
+function createEmptyUserForm(roleId = ""): CreateUserForm {
+  return {
+    username: "",
+    name: "",
+    password: "",
+    confirmPassword: "",
+    role_id: roleId,
+    enabled: true,
+  };
+}
+
+function validateCreateUserForm(values: CreateUserForm) {
+  const errors: CreateUserErrors = {};
+  const username = values.username.trim().toLowerCase();
+
+  if (!accountUsernamePattern.test(username)) {
+    errors.username = "用户名需为 3-32 位小写字母、数字、点、下划线或短横线，并以字母或数字开头";
+  }
+  if (values.password.length < 8) {
+    errors.password = "密码长度不能少于 8 位";
+  } else if (values.password.length > 128) {
+    errors.password = "密码长度不能超过 128 位";
+  }
+  if (!values.confirmPassword) {
+    errors.confirmPassword = "请确认密码";
+  } else if (values.confirmPassword !== values.password) {
+    errors.confirmPassword = "两次输入的密码不一致";
+  }
+
+  return errors;
+}
+
+function createUserPayload(values: CreateUserForm): CreateManagedUserPayload {
+  return {
+    username: values.username.trim().toLowerCase(),
+    name: values.name.trim(),
+    password: values.password,
+    role_id: values.role_id,
+    enabled: values.enabled,
+  };
+}
+
 function providerLabel(provider?: string) {
   if (provider === "linuxdo") {
     return "Linuxdo";
@@ -74,17 +133,12 @@ function providerLabel(provider?: string) {
   return provider || "未知";
 }
 
-function linuxDoLevelLabel(user: ManagedUser) {
-  if (user.provider !== "linuxdo") {
-    return "—";
-  }
-  const level = String(user.linuxdo_level || "").trim();
-  return level ? `等级 ${level}` : "未获取";
-}
-
-function maskToken(hasToken: boolean) {
-  return hasToken ? "••••••••••••••••••••••••" : "未生成";
-}
+const linuxDoLevelColors: Record<string, string> = {
+  "0": "text-stone-500 dark:text-stone-400",
+  "1": "text-emerald-600 dark:text-emerald-400",
+  "2": "text-blue-600 dark:text-blue-400",
+  "3": "text-amber-600 dark:text-amber-400",
+};
 
 function numeric(value: unknown) {
   return typeof value === "number" && Number.isFinite(value) ? value : 0;
@@ -123,13 +177,14 @@ function UsageSparkline({ points }: { points?: ManagedUser["usage_curve"] }) {
 function userSearchText(user: ManagedUser) {
   return [
     user.id,
+    user.username,
     user.name,
+    user.role_id,
+    user.role_name,
     user.owner_id,
     user.owner_name,
     user.provider,
     user.linuxdo_level,
-    user.api_key_id,
-    user.api_key_name,
     user.session_id,
     user.session_name,
   ]
@@ -138,27 +193,43 @@ function userSearchText(user: ManagedUser) {
     .toLowerCase();
 }
 
+function roleLabel(user: ManagedUser, roles: ManagedRole[]) {
+  const roleID = String(user.role_id || "").trim();
+  const role = roles.find((item) => item.id === roleID);
+  return user.role_name || role?.name || "普通用户";
+}
+
 function UsersContent() {
   const [items, setItems] = useState<ManagedUser[]>([]);
+  const [roles, setRoles] = useState<ManagedRole[]>([]);
   const [searchText, setSearchText] = useState("");
   const [providerFilter, setProviderFilter] = useState("all");
   const [statusFilter, setStatusFilter] = useState("all");
   const [isLoading, setIsLoading] = useState(true);
   const [pendingIds, setPendingIds] = useState<Set<string>>(() => new Set());
-  const [revealingIds, setRevealingIds] = useState<Set<string>>(() => new Set());
-  const [revealedKeysById, setRevealedKeysById] = useState<Record<string, string>>({});
   const [isCreateDialogOpen, setIsCreateDialogOpen] = useState(false);
-  const [createName, setCreateName] = useState("");
+  const [createForm, setCreateForm] = useState<CreateUserForm>(() => createEmptyUserForm());
+  const [createErrors, setCreateErrors] = useState<CreateUserErrors>({});
   const [isCreating, setIsCreating] = useState(false);
-  const [resettingUser, setResettingUser] = useState<ManagedUser | null>(null);
-  const [resetName, setResetName] = useState("");
   const [deletingUser, setDeletingUser] = useState<ManagedUser | null>(null);
+  const [roleUser, setRoleUser] = useState<ManagedUser | null>(null);
+  const [selectedRoleId, setSelectedRoleId] = useState("");
+  const [isSavingRole, setIsSavingRole] = useState(false);
 
   const loadUsers = useCallback(async () => {
     setIsLoading(true);
     try {
-      const data = await fetchManagedUsers();
-      setItems(normalizeManagedUsers(data.items));
+      const [usersData, rolesData] = await Promise.all([
+        fetchManagedUsers(),
+        fetchManagedRoles(),
+      ]);
+      const nextRoles = normalizeManagedRoles(rolesData.items);
+      setItems(normalizeManagedUsers(usersData.items));
+      setRoles(nextRoles);
+      setCreateForm((current) => ({
+        ...current,
+        role_id: current.role_id || nextRoles[0]?.id || "",
+      }));
     } catch (error) {
       toast.error(error instanceof Error ? error.message : "加载用户失败");
     } finally {
@@ -199,26 +270,42 @@ function UsersContent() {
     });
   };
 
-  const setRevealPending = (id: string, isPending: boolean) => {
-    setRevealingIds((current) => {
-      const next = new Set(current);
-      if (isPending) {
-        next.add(id);
-      } else {
-        next.delete(id);
-      }
-      return next;
-    });
+  const updateCreateField = <Key extends keyof CreateUserForm>(field: Key, value: CreateUserForm[Key]) => {
+    setCreateForm((current) => ({ ...current, [field]: value }));
+    if (field === "username" || field === "password" || field === "confirmPassword") {
+      setCreateErrors((current) => ({ ...current, [field]: undefined }));
+    }
+  };
+
+  const openCreateDialog = () => {
+    const roleId = createForm.role_id || roles[0]?.id || "";
+    setCreateForm(createEmptyUserForm(roleId));
+    setCreateErrors({});
+    setIsCreateDialogOpen(true);
+  };
+
+  const closeCreateDialog = (open: boolean) => {
+    setIsCreateDialogOpen(open);
+    if (!open) {
+      setCreateErrors({});
+      setCreateForm(createEmptyUserForm(createForm.role_id || roles[0]?.id || ""));
+    }
   };
 
   const handleCreate = async () => {
+    const nextErrors = validateCreateUserForm(createForm);
+    if (Object.keys(nextErrors).length > 0) {
+      setCreateErrors(nextErrors);
+      return;
+    }
+
     setIsCreating(true);
     try {
-      const data = await createManagedUser(createName.trim());
+      const data = await createManagedUser(createUserPayload(createForm));
       setItems(normalizeManagedUsers(data.items));
-      setRevealedKeysById((current) => ({ ...current, [data.item.id]: data.key }));
-      setCreateName("");
-      setIsCreateDialogOpen(false);
+      setCreateForm(createEmptyUserForm(createForm.role_id));
+      setCreateErrors({});
+      closeCreateDialog(false);
       toast.success("用户已创建");
     } catch (error) {
       toast.error(error instanceof Error ? error.message : "创建用户失败");
@@ -240,53 +327,29 @@ function UsersContent() {
     }
   };
 
-  const handleReveal = async (user: ManagedUser) => {
-    if (revealedKeysById[user.id]) {
-      setRevealedKeysById((current) => {
-        const next = { ...current };
-        delete next[user.id];
-        return next;
-      });
-      return;
-    }
-    if (!user.has_api_key) {
-      toast.error("该用户还没有 API 令牌");
-      return;
-    }
-
-    setRevealPending(user.id, true);
-    try {
-      const data = await revealManagedUserKey(user.id);
-      setRevealedKeysById((current) => ({ ...current, [user.id]: data.key }));
-      toast.success("令牌已显示");
-    } catch (error) {
-      toast.error(error instanceof Error ? error.message : "查看令牌失败");
-    } finally {
-      setRevealPending(user.id, false);
-    }
+  const openRoleDialog = (user: ManagedUser) => {
+    setRoleUser(user);
+    setSelectedRoleId(user.role_id || roles[0]?.id || "");
   };
 
-  const openResetDialog = (user: ManagedUser) => {
-    setResetName(user.api_key_name || "");
-    setResettingUser(user);
-  };
-
-  const handleReset = async () => {
-    if (!resettingUser) {
+  const handleSaveRole = async () => {
+    if (!roleUser || !selectedRoleId) {
       return;
     }
-    const user = resettingUser;
+    const user = roleUser;
+    setIsSavingRole(true);
     setItemPending(user.id, true);
     try {
-      const data = await resetManagedUserKey(user.id, resetName.trim());
+      const data = await updateManagedUser(user.id, {
+        role_id: selectedRoleId,
+      });
       setItems(normalizeManagedUsers(data.items));
-      setRevealedKeysById((current) => ({ ...current, [user.id]: data.key }));
-      setResettingUser(null);
-      setResetName("");
-      toast.success(user.has_api_key ? "令牌已重置" : "令牌已生成");
+      setRoleUser(null);
+      toast.success("角色已保存");
     } catch (error) {
-      toast.error(error instanceof Error ? error.message : "重置令牌失败");
+      toast.error(error instanceof Error ? error.message : "保存角色失败");
     } finally {
+      setIsSavingRole(false);
       setItemPending(user.id, false);
     }
   };
@@ -301,25 +364,11 @@ function UsersContent() {
       const data = await deleteManagedUser(user.id);
       setItems(normalizeManagedUsers(data.items));
       setDeletingUser(null);
-      setRevealedKeysById((current) => {
-        const next = { ...current };
-        delete next[user.id];
-        return next;
-      });
       toast.success("用户已删除");
     } catch (error) {
       toast.error(error instanceof Error ? error.message : "删除用户失败");
     } finally {
       setItemPending(user.id, false);
-    }
-  };
-
-  const handleCopy = async (value: string) => {
-    try {
-      await navigator.clipboard.writeText(value);
-      toast.success("已复制到剪贴板");
-    } catch {
-      toast.error("复制失败，请手动复制");
     }
   };
 
@@ -334,7 +383,7 @@ function UsersContent() {
               <RefreshCw className={`size-4 ${isLoading ? "animate-spin" : ""}`} />
               刷新
             </Button>
-            <Button onClick={() => setIsCreateDialogOpen(true)} className="h-10 rounded-lg">
+            <Button onClick={openCreateDialog} className="h-10 rounded-lg">
               <Plus className="size-4" />
               创建用户
             </Button>
@@ -354,7 +403,7 @@ function UsersContent() {
                 <Input
                   value={searchText}
                   onChange={(event) => setSearchText(event.target.value)}
-                  placeholder="搜索用户名、用户 ID、owner、令牌或会话"
+                  placeholder="搜索用户名、用户 ID、owner 或会话"
                   className="h-10 rounded-lg pl-9"
                 />
               </div>
@@ -395,49 +444,58 @@ function UsersContent() {
             </div>
           </div>
           <div className="overflow-x-auto">
-            <Table className="min-w-[1280px]">
+            <Table className="min-w-[1240px]">
               <TableHeader>
                 <TableRow>
                   <TableHead>用户</TableHead>
+                  <TableHead>角色</TableHead>
                   <TableHead>来源</TableHead>
-                  <TableHead>等级</TableHead>
                   <TableHead>状态</TableHead>
                   <TableHead>额度消耗</TableHead>
                   <TableHead>调用曲线</TableHead>
-                  <TableHead>令牌</TableHead>
                   <TableHead>时间</TableHead>
-                  <TableHead className="w-[280px]">操作</TableHead>
+                  <TableHead className="w-[260px]">操作</TableHead>
                 </TableRow>
               </TableHeader>
               <TableBody>
                 {filteredItems.map((user) => {
                   const isPending = pendingIds.has(user.id);
-                  const isRevealing = revealingIds.has(user.id);
-                  const revealedKey = revealedKeysById[user.id] ?? "";
-                  const canManageToken = user.provider !== "linuxdo";
                   return (
                     <TableRow key={user.id} className="text-muted-foreground">
                       <TableCell>
                         <div className="min-w-0 space-y-1">
                           <div className="truncate font-medium text-foreground">{user.name || "普通用户"}</div>
+                          {user.username ? (
+                            <div className="flex items-center gap-1.5 text-xs text-muted-foreground">
+                              <UserRound className="size-3.5" />
+                              <span className="truncate">{user.username}</span>
+                            </div>
+                          ) : null}
                           <code className="block max-w-[260px] truncate font-mono text-xs text-muted-foreground">{user.id}</code>
+                        </div>
+                      </TableCell>
+                      <TableCell>
+                        <div className="flex flex-col items-start gap-1">
+                          <Badge variant="secondary" className="rounded-md">
+                            {roleLabel(user, roles)}
+                          </Badge>
+                          <code className="max-w-[160px] truncate font-mono text-xs text-muted-foreground">
+                            {user.role_id || "default-user"}
+                          </code>
                         </div>
                       </TableCell>
                       <TableCell>
                         <div className="flex flex-col items-start gap-1.5">
                           <Badge variant={user.provider === "linuxdo" ? "info" : "secondary"} className="rounded-md">
                             {providerLabel(user.provider)}
+                            {user.provider === "linuxdo" && (() => {
+                              const level = String(user.linuxdo_level || "").trim();
+                              return level ? (
+                                <span className={`ml-1 ${linuxDoLevelColors[level] || "text-muted-foreground"}`}>· Lv{level}</span>
+                              ) : null;
+                            })()}
                           </Badge>
                         </div>
-                      </TableCell>
-                      <TableCell>
-                        {user.provider === "linuxdo" ? (
-                          <Badge variant={user.linuxdo_level ? "warning" : "secondary"} className="rounded-md">
-                            {linuxDoLevelLabel(user)}
-                          </Badge>
-                        ) : (
-                          <span className="text-xs text-muted-foreground">—</span>
-                        )}
                       </TableCell>
                       <TableCell>
                         <Badge variant={user.enabled ? "success" : "danger"} className="rounded-md">
@@ -460,31 +518,6 @@ function UsersContent() {
                         </div>
                       </TableCell>
                       <TableCell>
-                        {canManageToken ? (
-                          <div className="flex max-w-[300px] items-center gap-2 rounded-lg border border-border bg-muted/40 px-3 py-2">
-                            <code className="min-w-0 flex-1 truncate font-mono text-xs text-foreground">
-                              {revealedKey || maskToken(user.has_api_key)}
-                            </code>
-                            {revealedKey ? (
-                              <Button
-                                type="button"
-                                variant="ghost"
-                                size="icon"
-                                className="size-7 rounded-lg"
-                                onClick={() => void handleCopy(revealedKey)}
-                                aria-label="复制令牌"
-                              >
-                                <Copy className="size-3.5" />
-                              </Button>
-                            ) : null}
-                          </div>
-                        ) : (
-                          <Badge variant="secondary" className="rounded-md">
-                            Linuxdo 登录
-                          </Badge>
-                        )}
-                      </TableCell>
-                      <TableCell>
                         <div className="space-y-1 text-xs">
                           <div>创建 {formatDateTime(user.created_at)}</div>
                           <div>使用 {formatDateTime(user.last_used_at)}</div>
@@ -492,36 +525,16 @@ function UsersContent() {
                       </TableCell>
                       <TableCell>
                         <div className="flex flex-wrap justify-end gap-2">
-                          {canManageToken ? (
-                            <>
-                              <Button
-                                type="button"
-                                variant="outline"
-                                className="h-8 rounded-lg px-3"
-                                onClick={() => void handleReveal(user)}
-                                disabled={isRevealing || !user.has_api_key}
-                              >
-                                {isRevealing ? (
-                                  <LoaderCircle className="size-4 animate-spin" />
-                                ) : revealedKey ? (
-                                  <EyeOff className="size-4" />
-                                ) : (
-                                  <Eye className="size-4" />
-                                )}
-                                {revealedKey ? "隐藏" : "查看"}
-                              </Button>
-                              <Button
-                                type="button"
-                                variant="outline"
-                                className="h-8 rounded-lg px-3"
-                                onClick={() => openResetDialog(user)}
-                                disabled={isPending}
-                              >
-                                <RotateCcw className="size-4" />
-                                {user.has_api_key ? "重置" : "生成"}
-                              </Button>
-                            </>
-                          ) : null}
+                          <Button
+                            type="button"
+                            variant="outline"
+                            className="h-8 rounded-lg px-3"
+                            onClick={() => openRoleDialog(user)}
+                            disabled={isPending}
+                          >
+                            <ShieldCheck className="size-4" />
+                            角色
+                          </Button>
                           <Button
                             type="button"
                             variant="outline"
@@ -565,23 +578,100 @@ function UsersContent() {
         </CardContent>
       </Card>
 
-      <Dialog open={isCreateDialogOpen} onOpenChange={setIsCreateDialogOpen}>
-        <DialogContent className="rounded-2xl p-6">
+      <Dialog open={isCreateDialogOpen} onOpenChange={closeCreateDialog}>
+        <DialogContent className="rounded-2xl p-6 sm:max-w-2xl">
           <DialogHeader className="gap-2">
             <DialogTitle>创建用户</DialogTitle>
-            <DialogDescription className="text-sm leading-6">创建后会立即生成一条 API 令牌。</DialogDescription>
+            <DialogDescription className="text-sm leading-6">创建本地登录用户并绑定角色。</DialogDescription>
           </DialogHeader>
-          <div className="space-y-2">
-            <label className="text-sm font-medium text-stone-700 dark:text-foreground">名称</label>
-            <Input
-              value={createName}
-              onChange={(event) => setCreateName(event.target.value)}
-              placeholder="例如：运营账号"
-              className="h-11 rounded-xl"
-            />
+          <div className="grid gap-4 sm:grid-cols-2">
+            <div className="space-y-2">
+              <label className="text-sm font-medium text-stone-700 dark:text-foreground">用户名</label>
+              <div className="relative">
+                <UserRound className="pointer-events-none absolute left-3 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
+                <Input
+                  value={createForm.username}
+                  onChange={(event) => updateCreateField("username", event.target.value.toLowerCase())}
+                  placeholder="例如：operator_01"
+                  autoComplete="username"
+                  className="h-11 rounded-xl pl-9"
+                  aria-invalid={Boolean(createErrors.username)}
+                />
+              </div>
+              {createErrors.username ? <p className="text-xs leading-5 text-destructive">{createErrors.username}</p> : null}
+            </div>
+            <div className="space-y-2">
+              <label className="text-sm font-medium text-stone-700 dark:text-foreground">显示名称</label>
+              <Input
+                value={createForm.name}
+                onChange={(event) => updateCreateField("name", event.target.value)}
+                placeholder="例如：运营账号"
+                className="h-11 rounded-xl"
+              />
+            </div>
+          </div>
+          <div className="grid gap-4 sm:grid-cols-2">
+            <div className="space-y-2">
+              <label className="text-sm font-medium text-stone-700 dark:text-foreground">密码</label>
+              <div className="relative">
+                <KeyRound className="pointer-events-none absolute left-3 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
+                <Input
+                  value={createForm.password}
+                  onChange={(event) => updateCreateField("password", event.target.value)}
+                  placeholder="至少 8 位"
+                  type="password"
+                  autoComplete="new-password"
+                  className="h-11 rounded-xl pl-9"
+                  aria-invalid={Boolean(createErrors.password)}
+                />
+              </div>
+              {createErrors.password ? <p className="text-xs leading-5 text-destructive">{createErrors.password}</p> : null}
+            </div>
+            <div className="space-y-2">
+              <label className="text-sm font-medium text-stone-700 dark:text-foreground">确认密码</label>
+              <Input
+                value={createForm.confirmPassword}
+                onChange={(event) => updateCreateField("confirmPassword", event.target.value)}
+                placeholder="再次输入密码"
+                type="password"
+                autoComplete="new-password"
+                className="h-11 rounded-xl"
+                aria-invalid={Boolean(createErrors.confirmPassword)}
+              />
+              {createErrors.confirmPassword ? <p className="text-xs leading-5 text-destructive">{createErrors.confirmPassword}</p> : null}
+            </div>
+          </div>
+          <div className="grid gap-4 sm:grid-cols-2">
+            <div className="space-y-2">
+              <label className="text-sm font-medium text-stone-700 dark:text-foreground">角色</label>
+              <Select value={createForm.role_id} onValueChange={(value) => updateCreateField("role_id", value)}>
+                <SelectTrigger className="h-11 rounded-xl">
+                  <SelectValue placeholder="选择角色" />
+                </SelectTrigger>
+                <SelectContent>
+                  {roles.map((role) => (
+                    <SelectItem key={role.id} value={role.id}>
+                      {role.name}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+            <div className="space-y-2">
+              <label className="text-sm font-medium text-stone-700 dark:text-foreground">状态</label>
+              <Select value={createForm.enabled ? "true" : "false"} onValueChange={(value) => updateCreateField("enabled", value === "true")}>
+                <SelectTrigger className="h-11 rounded-xl">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="true">已启用</SelectItem>
+                  <SelectItem value="false">已禁用</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
           </div>
           <DialogFooter>
-            <Button type="button" variant="secondary" className="h-10 rounded-xl px-5" onClick={() => setIsCreateDialogOpen(false)} disabled={isCreating}>
+            <Button type="button" variant="secondary" className="h-10 rounded-xl px-5" onClick={() => closeCreateDialog(false)} disabled={isCreating}>
               取消
             </Button>
             <Button type="button" className="h-10 rounded-xl px-5" onClick={() => void handleCreate()} disabled={isCreating}>
@@ -592,41 +682,50 @@ function UsersContent() {
         </DialogContent>
       </Dialog>
 
-      <Dialog open={Boolean(resettingUser)} onOpenChange={(open) => (!open ? setResettingUser(null) : null)}>
+      <Dialog open={Boolean(roleUser)} onOpenChange={(open) => (!open ? setRoleUser(null) : null)}>
         <DialogContent className="rounded-2xl p-6">
           <DialogHeader className="gap-2">
-            <DialogTitle>{resettingUser?.has_api_key ? "重置令牌" : "生成令牌"}</DialogTitle>
-            <DialogDescription className="text-sm leading-6">
-              {resettingUser?.has_api_key ? `确认重置「${resettingUser.name}」的 API 令牌吗？` : `为「${resettingUser?.name}」生成 API 令牌。`}
+            <DialogTitle className="flex items-center gap-2">
+              <ShieldCheck className="size-5 text-[#1456f0]" />
+              分配角色
+            </DialogTitle>
+            <DialogDescription className="truncate text-sm">
+              {roleUser?.name || "普通用户"} · {roleUser?.id}
             </DialogDescription>
           </DialogHeader>
           <div className="space-y-2">
-            <label className="text-sm font-medium text-stone-700 dark:text-foreground">令牌名称</label>
-            <Input
-              value={resetName}
-              onChange={(event) => setResetName(event.target.value)}
-              placeholder="我的 API 令牌"
-              className="h-11 rounded-xl"
-            />
+            <label className="text-sm font-medium text-stone-700 dark:text-foreground">角色</label>
+            <Select value={selectedRoleId} onValueChange={setSelectedRoleId}>
+              <SelectTrigger className="h-11 rounded-xl">
+                <SelectValue placeholder="选择角色" />
+              </SelectTrigger>
+              <SelectContent>
+                {roles.map((role) => (
+                  <SelectItem key={role.id} value={role.id}>
+                    {role.name}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
           </div>
           <DialogFooter>
             <Button
               type="button"
               variant="secondary"
               className="h-10 rounded-xl px-5"
-              onClick={() => setResettingUser(null)}
-              disabled={resettingUser ? pendingIds.has(resettingUser.id) : false}
+              onClick={() => setRoleUser(null)}
+              disabled={isSavingRole}
             >
               取消
             </Button>
             <Button
               type="button"
               className="h-10 rounded-xl px-5"
-              onClick={() => void handleReset()}
-              disabled={resettingUser ? pendingIds.has(resettingUser.id) : false}
+              onClick={() => void handleSaveRole()}
+              disabled={isSavingRole || !roleUser || !selectedRoleId}
             >
-              {resettingUser && pendingIds.has(resettingUser.id) ? <LoaderCircle className="size-4 animate-spin" /> : <RotateCcw className="size-4" />}
-              确认
+              {isSavingRole ? <LoaderCircle className="size-4 animate-spin" /> : <ShieldCheck className="size-4" />}
+              保存
             </Button>
           </DialogFooter>
         </DialogContent>
@@ -665,8 +764,8 @@ function UsersContent() {
 }
 
 export default function UsersPage() {
-  const { isCheckingAuth, session } = useAuthGuard(["admin"]);
-  if (isCheckingAuth || !session || session.role !== "admin") {
+  const { isCheckingAuth, session } = useAuthGuard(undefined, "/users");
+  if (isCheckingAuth || !session) {
     return <div className="flex min-h-[40vh] items-center justify-center"><LoaderCircle className="size-5 animate-spin text-stone-400" /></div>;
   }
   return <UsersContent />;

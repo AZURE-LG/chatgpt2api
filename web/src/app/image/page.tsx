@@ -2447,7 +2447,7 @@ function ImagePageContent() {
 }
 
 export default function ImagePage() {
-  const { isCheckingAuth, session } = useAuthGuard();
+  const { isCheckingAuth, session } = useAuthGuard(undefined, "/image");
 
   if (isCheckingAuth || !session) {
     return (

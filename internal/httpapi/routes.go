@@ -109,15 +109,214 @@ func userKeyScope(identity service.Identity) (service.AuthKeyFilter, service.Aut
 	if identity.Role == service.AuthRoleAdmin {
 		return filter, service.AuthOwner{}, true
 	}
-	if identity.Role != service.AuthRoleUser || identity.Provider != service.AuthProviderLinuxDo || identity.OwnerID == "" {
+	if identity.Role != service.AuthRoleUser || identity.OwnerID == "" {
 		return service.AuthKeyFilter{}, service.AuthOwner{}, false
 	}
 	filter.OwnerID = identity.OwnerID
 	return filter, service.AuthOwner{ID: identity.OwnerID, Name: identity.Name, Provider: identity.Provider}, true
 }
 
+func (a *App) handleProfile(w http.ResponseWriter, r *http.Request) {
+	identity, ok := a.requireIdentity(w, r, "")
+	if !ok {
+		return
+	}
+	switch r.Method {
+	case http.MethodGet:
+		a.writeLoginResponse(w, identity, "")
+	case http.MethodPost:
+		body, err := readJSONMap(r)
+		if err != nil {
+			util.WriteError(w, http.StatusBadRequest, "invalid json body")
+			return
+		}
+		updated, err := a.auth.UpdateProfileName(identity, util.Clean(body["name"]))
+		if err != nil {
+			util.WriteError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		a.writeLoginResponse(w, *updated, "")
+	default:
+		w.WriteHeader(http.StatusMethodNotAllowed)
+	}
+}
+
+func (a *App) handleProfilePassword(w http.ResponseWriter, r *http.Request) {
+	identity, ok := a.requireIdentity(w, r, "")
+	if !ok {
+		return
+	}
+	body, err := readJSONMap(r)
+	if err != nil {
+		util.WriteError(w, http.StatusBadRequest, "invalid json body")
+		return
+	}
+	if err := a.auth.ChangeProfilePassword(identity, util.Clean(body["current_password"]), util.Clean(body["new_password"])); err != nil {
+		util.WriteError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	util.WriteJSON(w, http.StatusOK, map[string]any{"ok": true})
+}
+
+func (a *App) handleProfileAPIKey(w http.ResponseWriter, r *http.Request) {
+	identity, ok := a.requireIdentity(w, r, "")
+	if !ok {
+		return
+	}
+	filter, ok := profileAPIKeyFilter(identity)
+	if !ok {
+		util.WriteError(w, http.StatusForbidden, "profile API key requires a bound user account")
+		return
+	}
+	base := "/api/profile/api-key"
+	if r.URL.Path == base {
+		switch r.Method {
+		case http.MethodGet:
+			util.WriteJSON(w, http.StatusOK, map[string]any{"items": a.auth.ListPersonalAPIKey(identity)})
+		case http.MethodPost:
+			body, _ := readJSONMap(r)
+			item, raw, err := a.auth.UpsertPersonalAPIKey(identity, util.Clean(body["name"]))
+			if err != nil {
+				util.WriteError(w, http.StatusBadRequest, err.Error())
+				return
+			}
+			util.WriteJSON(w, http.StatusOK, map[string]any{"item": item, "key": raw, "items": a.auth.ListPersonalAPIKey(identity)})
+		default:
+			w.WriteHeader(http.StatusMethodNotAllowed)
+		}
+		return
+	}
+
+	parts := splitPath(r.URL.Path)
+	if len(parts) < 4 || parts[0] != "api" || parts[1] != "profile" || parts[2] != "api-key" {
+		http.NotFound(w, r)
+		return
+	}
+	keyID := parts[3]
+	if len(parts) == 5 && parts[4] == "key" {
+		if r.Method != http.MethodGet {
+			w.WriteHeader(http.StatusMethodNotAllowed)
+			return
+		}
+		key, found := a.auth.RevealKey(keyID, filter)
+		if !found {
+			util.WriteError(w, http.StatusNotFound, "profile API key not found")
+			return
+		}
+		util.WriteJSON(w, http.StatusOK, map[string]any{"key": key})
+		return
+	}
+	if len(parts) != 4 {
+		http.NotFound(w, r)
+		return
+	}
+	switch r.Method {
+	case http.MethodPost:
+		body, _ := readJSONMap(r)
+		updates := map[string]any{}
+		if value, ok := body["name"]; ok {
+			updates["name"] = value
+		}
+		if value, ok := body["enabled"]; ok {
+			updates["enabled"] = value
+		}
+		if len(updates) == 0 {
+			util.WriteError(w, http.StatusBadRequest, "no updates provided")
+			return
+		}
+		item := a.auth.UpdateKey(keyID, updates, filter)
+		if item == nil {
+			util.WriteError(w, http.StatusNotFound, "profile API key not found")
+			return
+		}
+		util.WriteJSON(w, http.StatusOK, map[string]any{"item": item, "items": a.auth.ListPersonalAPIKey(identity)})
+	case http.MethodDelete:
+		if !a.auth.DeleteKey(keyID, filter) {
+			util.WriteError(w, http.StatusNotFound, "profile API key not found")
+			return
+		}
+		util.WriteJSON(w, http.StatusOK, map[string]any{"items": a.auth.ListPersonalAPIKey(identity)})
+	default:
+		w.WriteHeader(http.StatusMethodNotAllowed)
+	}
+}
+
+func profileAPIKeyFilter(identity service.Identity) (service.AuthKeyFilter, bool) {
+	role := identity.Role
+	if role != service.AuthRoleAdmin && role != service.AuthRoleUser {
+		return service.AuthKeyFilter{}, false
+	}
+	ownerID := util.Clean(identity.OwnerID)
+	if ownerID == "" {
+		return service.AuthKeyFilter{}, false
+	}
+	return service.AuthKeyFilter{Role: role, Kind: service.AuthKindAPIKey, OwnerID: ownerID}, true
+}
+
+func (a *App) handleAdminRoles(w http.ResponseWriter, r *http.Request) {
+	if _, ok := a.requireIdentity(w, r, ""); !ok {
+		return
+	}
+	base := "/api/admin/roles"
+	if r.URL.Path == base {
+		switch r.Method {
+		case http.MethodGet:
+			util.WriteJSON(w, http.StatusOK, map[string]any{"items": a.auth.ListRoles()})
+		case http.MethodPost:
+			body, _ := readJSONMap(r)
+			item, err := a.auth.CreateRole(body)
+			if err != nil {
+				util.WriteError(w, http.StatusBadRequest, err.Error())
+				return
+			}
+			util.WriteJSON(w, http.StatusOK, map[string]any{"item": item, "items": a.auth.ListRoles()})
+		default:
+			w.WriteHeader(http.StatusMethodNotAllowed)
+		}
+		return
+	}
+
+	parts := splitPath(r.URL.Path)
+	if len(parts) != 4 || parts[0] != "api" || parts[1] != "admin" || parts[2] != "roles" {
+		http.NotFound(w, r)
+		return
+	}
+	roleID := parts[3]
+	switch r.Method {
+	case http.MethodPost:
+		body, _ := readJSONMap(r)
+		item, err := a.auth.UpdateRole(roleID, body)
+		if err != nil {
+			status := http.StatusBadRequest
+			if err.Error() == "role not found" {
+				status = http.StatusNotFound
+			}
+			util.WriteError(w, status, err.Error())
+			return
+		}
+		util.WriteJSON(w, http.StatusOK, map[string]any{"item": item, "items": a.auth.ListRoles()})
+	case http.MethodDelete:
+		deleted, err := a.auth.DeleteRole(roleID)
+		if err != nil {
+			status := http.StatusBadRequest
+			if err.Error() == "role is assigned to users" {
+				status = http.StatusConflict
+			}
+			util.WriteError(w, status, err.Error())
+			return
+		}
+		if !deleted {
+			util.WriteError(w, http.StatusNotFound, "role not found")
+			return
+		}
+		util.WriteJSON(w, http.StatusOK, map[string]any{"items": a.auth.ListRoles()})
+	default:
+		w.WriteHeader(http.StatusMethodNotAllowed)
+	}
+}
+
 func (a *App) handleAdminUsers(w http.ResponseWriter, r *http.Request) {
-	if _, ok := a.requireAdmin(w, r); !ok {
+	if _, ok := a.requireIdentity(w, r, ""); !ok {
 		return
 	}
 	base := "/api/admin/users"
@@ -126,14 +325,31 @@ func (a *App) handleAdminUsers(w http.ResponseWriter, r *http.Request) {
 		case http.MethodGet:
 			util.WriteJSON(w, http.StatusOK, map[string]any{"items": a.managedUsers()})
 		case http.MethodPost:
-			body, _ := readJSONMap(r)
-			apiKey, raw, err := a.auth.CreateAPIKey(service.AuthRoleUser, util.Clean(body["name"]), service.AuthOwner{})
+			body, err := readJSONMap(r)
+			if err != nil {
+				util.WriteError(w, http.StatusBadRequest, "invalid json body")
+				return
+			}
+			enabled := true
+			if value, ok := body["enabled"]; ok {
+				enabled = util.ToBool(value)
+			}
+			item, err := a.auth.CreatePasswordUser(
+				util.Clean(body["username"]),
+				util.Clean(body["password"]),
+				util.Clean(body["name"]),
+				util.Clean(body["role_id"]),
+				enabled,
+			)
 			if err != nil {
 				util.WriteError(w, http.StatusBadRequest, err.Error())
 				return
 			}
 			items := a.managedUsers()
-			util.WriteJSON(w, http.StatusOK, map[string]any{"item": findManagedUser(items, util.Clean(apiKey["id"])), "api_key": apiKey, "key": raw, "items": items})
+			if current := findManagedUser(items, util.Clean(item["id"])); current != nil {
+				item = current
+			}
+			util.WriteJSON(w, http.StatusOK, map[string]any{"item": item, "items": items})
 		default:
 			w.WriteHeader(http.StatusMethodNotAllowed)
 		}
@@ -213,6 +429,13 @@ func (a *App) handleAdminUsers(w http.ResponseWriter, r *http.Request) {
 		if value, ok := body["enabled"]; ok {
 			updates["enabled"] = value
 		}
+		if value, ok := body["role_id"]; ok {
+			if roleID := util.Clean(value); roleID != "" && !a.auth.RoleExists(roleID) {
+				util.WriteError(w, http.StatusBadRequest, "role not found")
+				return
+			}
+			updates["role_id"] = value
+		}
 		if len(updates) == 0 {
 			util.WriteError(w, http.StatusBadRequest, "no updates provided")
 			return
@@ -272,7 +495,7 @@ func (a *App) handlePublicAnnouncements(w http.ResponseWriter, r *http.Request) 
 }
 
 func (a *App) handleAdminAnnouncements(w http.ResponseWriter, r *http.Request) {
-	if _, ok := a.requireAdmin(w, r); !ok {
+	if _, ok := a.requireIdentity(w, r, ""); !ok {
 		return
 	}
 	base := "/api/admin/announcements"
@@ -332,7 +555,7 @@ func (a *App) handleAdminAnnouncements(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *App) handleAccounts(w http.ResponseWriter, r *http.Request) {
-	if _, ok := a.requireAdmin(w, r); !ok {
+	if _, ok := a.requireIdentity(w, r, ""); !ok {
 		return
 	}
 	switch {
@@ -401,7 +624,7 @@ func (a *App) handleAccounts(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *App) handleCPA(w http.ResponseWriter, r *http.Request) {
-	if _, ok := a.requireAdmin(w, r); !ok {
+	if _, ok := a.requireIdentity(w, r, ""); !ok {
 		return
 	}
 	parts := splitPath(r.URL.Path)
@@ -482,7 +705,7 @@ func (a *App) handleCPA(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *App) handleSub2API(w http.ResponseWriter, r *http.Request) {
-	if _, ok := a.requireAdmin(w, r); !ok {
+	if _, ok := a.requireIdentity(w, r, ""); !ok {
 		return
 	}
 	parts := splitPath(r.URL.Path)
@@ -643,7 +866,7 @@ func (a *App) handleRegister(w http.ResponseWriter, r *http.Request) {
 		a.streamRegisterEvents(w, r)
 		return
 	}
-	if _, ok := a.requireAdmin(w, r); !ok {
+	if _, ok := a.requireIdentity(w, r, ""); !ok {
 		return
 	}
 	switch {

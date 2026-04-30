@@ -57,6 +57,9 @@ func (a *App) handleAuthProviders(w http.ResponseWriter, r *http.Request) {
 		"linuxdo": map[string]any{
 			"enabled": a.config.LinuxDoOAuth().Ready(),
 		},
+		"registration": map[string]any{
+			"enabled": a.config.RegistrationEnabled(),
+		},
 	})
 }
 

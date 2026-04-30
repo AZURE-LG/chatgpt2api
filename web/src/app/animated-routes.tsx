@@ -1,4 +1,6 @@
+import type { ReactNode } from "react";
 import {
+  Navigate,
   Route,
   Routes,
   useLocation,
@@ -11,6 +13,8 @@ import {
 } from "motion/react";
 
 import { appRoutes } from "@/app/route-config";
+import { getCachedAuthSession } from "@/lib/session";
+import { canAccessPath, getDefaultRouteForSession } from "@/store/auth";
 
 const routeTransition: Transition = {
   duration: 0.16,
@@ -37,6 +41,23 @@ const reducedRouteVariants: Variants = {
   animate: { opacity: 1 },
 };
 
+function PermissionRoute({ requiredPath, children }: { requiredPath?: string; children: ReactNode }) {
+  const session = getCachedAuthSession();
+  if (!requiredPath) {
+    return children;
+  }
+  if (session === undefined) {
+    return children;
+  }
+  if (!session) {
+    return <Navigate to="/login" replace />;
+  }
+  if (!canAccessPath(session, requiredPath)) {
+    return <Navigate to={getDefaultRouteForSession(session)} replace />;
+  }
+  return children;
+}
+
 export function AnimatedRoutes() {
   const location = useLocation();
   const prefersReducedMotion = useReducedMotion();
@@ -52,7 +73,11 @@ export function AnimatedRoutes() {
     >
       <Routes location={location}>
         {appRoutes.map((route) => (
-          <Route key={route.path} path={route.path} element={route.element} />
+          <Route
+            key={route.path}
+            path={route.path}
+            element={<PermissionRoute requiredPath={route.requiredPath}>{route.element}</PermissionRoute>}
+          />
         ))}
       </Routes>
     </motion.div>

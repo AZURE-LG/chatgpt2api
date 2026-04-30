@@ -18,7 +18,6 @@ import (
 )
 
 var settingEnvKeys = map[string]string{
-	"auth-key":                          "CHATGPT2API_AUTH_KEY",
 	"base_url":                          "CHATGPT2API_BASE_URL",
 	"proxy":                             "CHATGPT2API_PROXY",
 	"refresh_account_interval_minute":   "CHATGPT2API_REFRESH_ACCOUNT_INTERVAL_MINUTE",
@@ -34,6 +33,7 @@ var settingEnvKeys = map[string]string{
 	"linuxdo_client_secret":             "CHATGPT2API_LINUXDO_CLIENT_SECRET",
 	"linuxdo_redirect_url":              "CHATGPT2API_LINUXDO_REDIRECT_URL",
 	"linuxdo_frontend_redirect_url":     "CHATGPT2API_LINUXDO_FRONTEND_REDIRECT_URL",
+	"registration_enabled":              "CHATGPT2API_REGISTRATION_ENABLED",
 	"login_page_image_url":              "CHATGPT2API_LOGIN_PAGE_IMAGE_URL",
 	"login_page_image_mode":             "CHATGPT2API_LOGIN_PAGE_IMAGE_MODE",
 	"login_page_image_zoom":             "CHATGPT2API_LOGIN_PAGE_IMAGE_ZOOM",
@@ -97,9 +97,6 @@ func NewStore() (*Store, error) {
 	}
 	s.loadEnvFile()
 	s.data = settingsFromEnvValues(envFileValues)
-	if s.AuthKey() == "" {
-		return nil, errors.New("auth-key 未设置，请设置 CHATGPT2API_AUTH_KEY 或在 .env 中填写 CHATGPT2API_AUTH_KEY")
-	}
 	return s, nil
 }
 
@@ -156,8 +153,20 @@ func findAncestorWithProjectGoMod(start string) string {
 	}
 }
 
-func (s *Store) AuthKey() string {
-	return strings.TrimSpace(fmt.Sprint(s.settingValue("auth-key", "")))
+func (s *Store) AdminUsername() string {
+	value := strings.TrimSpace(os.Getenv("CHATGPT2API_ADMIN_USERNAME"))
+	if value == "" {
+		return "admin"
+	}
+	return value
+}
+
+func (s *Store) AdminPassword() string {
+	return strings.TrimSpace(os.Getenv("CHATGPT2API_ADMIN_PASSWORD"))
+}
+
+func (s *Store) RegistrationEnabled() bool {
+	return util.ToBool(s.settingValue("registration_enabled", false))
 }
 
 func (s *Store) RefreshAccountIntervalMinute() int {
@@ -342,6 +351,7 @@ func (s *Store) Get() map[string]any {
 	data["log_levels"] = s.LogLevels()
 	data["proxy"] = s.Proxy()
 	data["base_url"] = s.BaseURL()
+	data["registration_enabled"] = s.RegistrationEnabled()
 	linuxdo := s.LinuxDoOAuth()
 	data["linuxdo_enabled"] = linuxdo.Enabled
 	data["linuxdo_client_id"] = linuxdo.ClientID
@@ -353,7 +363,6 @@ func (s *Store) Get() map[string]any {
 	data["login_page_image_zoom"] = s.LoginPageImageZoom()
 	data["login_page_image_position_x"] = s.LoginPageImagePositionX()
 	data["login_page_image_position_y"] = s.LoginPageImagePositionY()
-	delete(data, "auth-key")
 	delete(data, "linuxdo_client_secret")
 	return data
 }
@@ -533,9 +542,7 @@ func (s *Store) saveLocked() error {
 	updates := map[string]string{}
 	keys := make([]string, 0, len(settingEnvKeys))
 	for key := range settingEnvKeys {
-		if key != "auth-key" {
-			keys = append(keys, key)
-		}
+		keys = append(keys, key)
 	}
 	sort.Strings(keys)
 	for _, key := range keys {

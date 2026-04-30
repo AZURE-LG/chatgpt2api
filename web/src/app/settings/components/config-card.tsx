@@ -128,6 +128,9 @@ export function ConfigCard() {
   const setLogLevel = useSettingsStore((state) => state.setLogLevel);
   const setProxy = useSettingsStore((state) => state.setProxy);
   const setBaseUrl = useSettingsStore((state) => state.setBaseUrl);
+  const setRegistrationEnabled = useSettingsStore(
+    (state) => state.setRegistrationEnabled,
+  );
   const saveConfig = useSettingsStore((state) => state.saveConfig);
 
   const handleTestProxy = async () => {
@@ -342,6 +345,20 @@ export function ConfigCard() {
               </div>
             ) : null}
           </Field>
+        </section>
+
+        <section className={configSectionClassName}>
+          <SectionHeading
+            title="账号入口"
+            tip="开启后登录页会显示账号注册入口，新账号默认绑定普通用户角色。"
+          />
+          <div className="grid gap-2 sm:grid-cols-2">
+            <ConfigOption
+              checked={Boolean(config?.registration_enabled)}
+              onCheckedChange={setRegistrationEnabled}
+              label="开放账号注册"
+            />
+          </div>
         </section>
 
         <section className={configSectionClassName}>

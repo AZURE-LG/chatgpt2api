@@ -39,6 +39,8 @@ func (a *App) routes() []appRoute {
 		exact(http.MethodPost, "/v1/messages", a.handleMessages),
 
 		exact(http.MethodPost, "/auth/login", a.handleLogin),
+		exact(http.MethodPost, "/auth/register", a.handleAccountRegister),
+		exact(http.MethodGet, "/auth/session", a.handleSession),
 		exact("", "/auth/providers", a.handleAuthProviders),
 		exact("", "/auth/linuxdo/start", a.handleLinuxDoOAuthStart),
 		exact("", "/auth/linuxdo/oauth/callback", a.handleLinuxDoOAuthCallback),
@@ -48,7 +50,11 @@ func (a *App) routes() []appRoute {
 
 		exact("", "/api/announcements", a.handlePublicAnnouncements),
 		subtree("/api/admin/announcements", a.handleAdminAnnouncements),
+		subtree("/api/admin/roles", a.handleAdminRoles),
 		subtree("/api/admin/users", a.handleAdminUsers),
+		exact("", "/api/profile", a.handleProfile),
+		exact(http.MethodPost, "/api/profile/password", a.handleProfilePassword),
+		subtree("/api/profile/api-key", a.handleProfileAPIKey),
 		subtree("/api/auth/users", a.handleUserKeys),
 		subtree("/api/accounts", a.handleAccounts),
 		subtree("/api/cpa/pools", a.handleCPA),
@@ -58,6 +64,7 @@ func (a *App) routes() []appRoute {
 		exact("", "/api/settings", a.handleSettings),
 		exact("", "/api/settings/login-page-image", a.handleLoginPageImageSettings),
 		exact(http.MethodGet, "/api/app-meta", a.handleAppMeta),
+		exact(http.MethodGet, "/api/admin/permissions", a.handlePermissionCatalog),
 		exact("", "/api/images/visibility", a.handleImageVisibility),
 		exact("", "/api/images", a.handleImages),
 		exact(http.MethodGet, "/api/logs", a.handleLogs),

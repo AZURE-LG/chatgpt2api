@@ -5,12 +5,15 @@ import { useNavigate } from "react-router-dom";
 import {
   ArrowRight,
   Github,
+  Send,
   KeyRound,
   LoaderCircle,
   LogIn,
   MoonStar,
   ShieldCheck,
   Sun,
+  UserPlus,
+  UserRound,
 } from "lucide-react";
 import { toast } from "sonner";
 
@@ -19,7 +22,7 @@ import { LoginPageImageStage } from "@/components/login-page-image-stage";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import webConfig from "@/constants/common-env";
-import { fetchAuthProviders, login } from "@/lib/api";
+import { fetchAuthProviders, login, registerAccount } from "@/lib/api";
 import { setVerifiedAuthSession } from "@/lib/session";
 import {
   applyColorTheme,
@@ -29,19 +32,24 @@ import {
 } from "@/lib/theme";
 import { useAppMeta } from "@/lib/use-app-meta";
 import { useRedirectIfAuthenticated } from "@/lib/use-auth-guard";
-import { getDefaultRouteForRole } from "@/store/auth";
+import { getDefaultRouteForSession } from "@/store/auth";
 
 const loginBackgroundClass =
   "bg-[#fff9fb] bg-[radial-gradient(rgba(20,86,240,0.12)_1px,transparent_1px),linear-gradient(145deg,#fff8fa_0%,#ffffff_48%,#f4f8ff_100%)] [background-position:0_0,center] [background-size:12px_12px,cover] dark:bg-[#090d16] dark:bg-[radial-gradient(rgba(96,165,250,0.16)_1px,transparent_1px),linear-gradient(145deg,#080b13_0%,#101827_52%,#070b12_100%)]";
 const githubUrl = "https://github.com/ZyphrZero/chatgpt2api";
+const telegramUrl = "https://t.me/+YBR7t_CPOYBkYzU1";
 
 export default function LoginPage() {
   const navigate = useNavigate();
   const appMeta = useAppMeta();
   const themeToggleRef = useRef<HTMLButtonElement | null>(null);
-  const [authKey, setAuthKey] = useState("");
+  const [username, setUsername] = useState("");
+  const [password, setPassword] = useState("");
+  const [displayName, setDisplayName] = useState("");
+  const [isRegisterMode, setIsRegisterMode] = useState(false);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [linuxDoEnabled, setLinuxDoEnabled] = useState(false);
+  const [registrationEnabled, setRegistrationEnabled] = useState(false);
   const [theme, setTheme] = useState<ColorTheme>(() => getPreferredColorTheme());
   const { isCheckingAuth } = useRedirectIfAuthenticated();
 
@@ -52,10 +60,12 @@ export default function LoginPage() {
         const providers = await fetchAuthProviders();
         if (active) {
           setLinuxDoEnabled(Boolean(providers.linuxdo?.enabled));
+          setRegistrationEnabled(Boolean(providers.registration?.enabled));
         }
       } catch {
         if (active) {
           setLinuxDoEnabled(false);
+          setRegistrationEnabled(false);
         }
       }
     };
@@ -65,26 +75,46 @@ export default function LoginPage() {
     };
   }, []);
 
-  const handleLogin = async () => {
-    const normalizedAuthKey = authKey.trim();
-    if (!normalizedAuthKey) {
-      toast.error("请输入 密钥");
+  const handleSubmit = async () => {
+    const normalizedUsername = username.trim();
+    const normalizedName = displayName.trim();
+    if (!normalizedUsername) {
+      toast.error("请输入用户名");
+      return;
+    }
+    if (!password) {
+      toast.error("请输入密码");
       return;
     }
 
     setIsSubmitting(true);
     try {
-      const data = await login(normalizedAuthKey);
-      await setVerifiedAuthSession({
-        key: normalizedAuthKey,
+      const data = isRegisterMode
+        ? await registerAccount(normalizedUsername, password, normalizedName)
+        : await login(normalizedUsername, password);
+      const token = String(data.token || "").trim();
+      if (!token) {
+        throw new Error("登录会话签发失败");
+      }
+      const session = {
+        key: token,
         role: data.role,
+        roleId: data.role_id,
+        roleName: data.role_name,
         subjectId: data.subject_id,
         name: data.name,
         provider: data.provider,
+        menuPaths: data.menu_paths || [],
+        apiPermissions: data.api_permissions || [],
+        menus: data.menus || [],
+      };
+      await setVerifiedAuthSession({
+        ...session,
       });
-      navigate(getDefaultRouteForRole(data.role), { replace: true });
+      toast.success(isRegisterMode ? "注册成功" : "登录成功");
+      navigate(getDefaultRouteForSession(session), { replace: true });
     } catch (error) {
-      const message = error instanceof Error ? error.message : "登录失败";
+      const message = error instanceof Error ? error.message : isRegisterMode ? "注册失败" : "登录失败";
       toast.error(message);
     } finally {
       setIsSubmitting(false);
@@ -126,6 +156,17 @@ export default function LoginPage() {
       className={`${loginBackgroundClass} fixed inset-0 z-50 flex min-h-svh w-screen items-center justify-center overflow-y-auto px-4 py-6 font-login sm:px-6 lg:px-8`}
     >
       <div className="fixed right-4 top-4 z-50 flex items-center gap-2 sm:right-6 sm:top-6">
+        <Button
+          asChild
+          type="button"
+          variant="outline"
+          className="h-9 rounded-full border-border/60 bg-background/80 px-3 text-muted-foreground shadow-sm backdrop-blur hover:text-foreground"
+        >
+          <a href={telegramUrl} target="_blank" rel="noreferrer" aria-label="加入 Telegram 群组">
+            <Send data-icon="inline-start" />
+            <span className="hidden sm:inline">Telegram</span>
+          </a>
+        </Button>
         <Button
           asChild
           type="button"
@@ -181,10 +222,12 @@ export default function LoginPage() {
               </div>
               <div className="flex flex-col gap-2">
                 <h1 className="text-[2.1rem] leading-[1.12] font-semibold tracking-[-0.04em] text-[#222222] dark:text-white sm:text-[2.5rem]">
-                  WelcomeBack
+                  {isRegisterMode ? "CreateAccount" : "WelcomeBack"}
                 </h1>
                 <p className="max-w-[340px] text-sm leading-6 text-[#45515e] dark:text-white/62">
-                  使用访问密钥继续进入 {appMeta.app_title || "chatgpt2api"} 管理台。
+                  {isRegisterMode
+                    ? `创建账号后进入 ${appMeta.app_title || "chatgpt2api"} 控制台。`
+                    : `使用账号和密码进入 ${appMeta.app_title || "chatgpt2api"} 控制台。`}
                 </p>
               </div>
             </div>
@@ -193,22 +236,58 @@ export default function LoginPage() {
               className="flex flex-col gap-5"
               onSubmit={(event) => {
                 event.preventDefault();
-                void handleLogin();
+                void handleSubmit();
               }}
             >
               <div className="flex flex-col gap-2">
-                <label htmlFor="auth-key" className="block text-sm font-semibold text-[#222222] dark:text-white/88">
-                  密钥
+                <label htmlFor="login-username" className="block text-sm font-semibold text-[#222222] dark:text-white/88">
+                  用户名
+                </label>
+                <div className="relative">
+                  <UserRound className="pointer-events-none absolute left-3.5 top-1/2 size-4 -translate-y-1/2 text-[#8e8e93] dark:text-white/42" />
+                  <Input
+                    id="login-username"
+                    type="text"
+                    autoComplete="username"
+                    value={username}
+                    onChange={(event) => setUsername(event.target.value)}
+                    placeholder="admin"
+                    className="h-12 rounded-[16px] bg-white/90 pl-10 shadow-[0_6px_18px_rgba(24,40,72,0.05)] dark:border-white/12 dark:bg-white/8 dark:text-white dark:placeholder:text-white/38 dark:shadow-[0_12px_26px_rgba(2,6,23,0.24)]"
+                  />
+                </div>
+              </div>
+              {isRegisterMode ? (
+                <div className="flex flex-col gap-2">
+                  <label htmlFor="login-display-name" className="block text-sm font-semibold text-[#222222] dark:text-white/88">
+                    昵称
+                  </label>
+                  <div className="relative">
+                    <UserPlus className="pointer-events-none absolute left-3.5 top-1/2 size-4 -translate-y-1/2 text-[#8e8e93] dark:text-white/42" />
+                    <Input
+                      id="login-display-name"
+                      type="text"
+                      autoComplete="nickname"
+                      value={displayName}
+                      onChange={(event) => setDisplayName(event.target.value)}
+                      placeholder="可选"
+                      className="h-12 rounded-[16px] bg-white/90 pl-10 shadow-[0_6px_18px_rgba(24,40,72,0.05)] dark:border-white/12 dark:bg-white/8 dark:text-white dark:placeholder:text-white/38 dark:shadow-[0_12px_26px_rgba(2,6,23,0.24)]"
+                    />
+                  </div>
+                </div>
+              ) : null}
+              <div className="flex flex-col gap-2">
+                <label htmlFor="login-password" className="block text-sm font-semibold text-[#222222] dark:text-white/88">
+                  密码
                 </label>
                 <div className="relative">
                   <KeyRound className="pointer-events-none absolute left-3.5 top-1/2 size-4 -translate-y-1/2 text-[#8e8e93] dark:text-white/42" />
                   <Input
-                    id="auth-key"
+                    id="login-password"
                     type="password"
-                    autoComplete="current-password"
-                    value={authKey}
-                    onChange={(event) => setAuthKey(event.target.value)}
-                    placeholder="请输入密钥"
+                    autoComplete={isRegisterMode ? "new-password" : "current-password"}
+                    value={password}
+                    onChange={(event) => setPassword(event.target.value)}
+                    placeholder={isRegisterMode ? "至少 8 位" : "请输入密码"}
                     className="h-12 rounded-[16px] bg-white/90 pl-10 shadow-[0_6px_18px_rgba(24,40,72,0.05)] dark:border-white/12 dark:bg-white/8 dark:text-white dark:placeholder:text-white/38 dark:shadow-[0_12px_26px_rgba(2,6,23,0.24)]"
                   />
                 </div>
@@ -229,9 +308,20 @@ export default function LoginPage() {
                     ) : (
                       <ArrowRight className="size-4" />
                     )}
-                    登录控制台
+                    {isRegisterMode ? "注册并进入" : "登录控制台"}
                   </span>
                 </Button>
+                {registrationEnabled ? (
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    className="mx-auto h-10 w-[88%] rounded-[1.2rem] text-[#45515e] hover:bg-black/5 hover:text-[#18181b] dark:text-white/62 dark:hover:bg-white/8 dark:hover:text-white"
+                    onClick={() => setIsRegisterMode((value) => !value)}
+                    disabled={isSubmitting}
+                  >
+                    {isRegisterMode ? "已有账号，返回登录" : "没有账号，注册一个"}
+                  </Button>
+                ) : null}
                 {linuxDoEnabled ? (
                   <Button
                     type="button"

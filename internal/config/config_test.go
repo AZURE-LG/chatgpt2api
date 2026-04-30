@@ -7,10 +7,9 @@ import (
 	"testing"
 )
 
-func TestStoreUpdatePersistsSettingsWithoutAuthKey(t *testing.T) {
+func TestStoreUpdatePersistsRuntimeSettings(t *testing.T) {
 	root := t.TempDir()
 	t.Setenv("CHATGPT2API_ROOT", root)
-	t.Setenv("CHATGPT2API_AUTH_KEY", "admin-secret")
 	unsetEnv(t, "CHATGPT2API_BASE_URL")
 	unsetEnv(t, "CHATGPT2API_PROXY")
 	unsetEnv(t, "CHATGPT2API_REFRESH_ACCOUNT_INTERVAL_MINUTE")
@@ -20,6 +19,7 @@ func TestStoreUpdatePersistsSettingsWithoutAuthKey(t *testing.T) {
 	unsetEnv(t, "CHATGPT2API_IMAGE_RETENTION_DAYS")
 	unsetEnv(t, "CHATGPT2API_AUTO_REMOVE_INVALID_ACCOUNTS")
 	unsetEnv(t, "CHATGPT2API_AUTO_REMOVE_RATE_LIMITED_ACCOUNTS")
+	unsetEnv(t, "CHATGPT2API_REGISTRATION_ENABLED")
 	unsetEnv(t, "CHATGPT2API_LOG_LEVELS")
 	unsetLinuxDoEnv(t)
 
@@ -29,7 +29,6 @@ func TestStoreUpdatePersistsSettingsWithoutAuthKey(t *testing.T) {
 	}
 
 	got, err := store.Update(map[string]any{
-		"auth-key":                        "new-secret",
 		"base_url":                        "https://example.test/root/",
 		"proxy":                           "http://127.0.0.1:8080",
 		"refresh_account_interval_minute": 7,
@@ -37,20 +36,16 @@ func TestStoreUpdatePersistsSettingsWithoutAuthKey(t *testing.T) {
 		"user_default_concurrent_limit":   2,
 		"user_default_rpm_limit":          30,
 		"image_retention_days":            14,
+		"registration_enabled":            true,
 		"log_levels":                      []any{"debug", "error"},
 	})
 	if err != nil {
 		t.Fatalf("Update() error = %v", err)
 	}
-	if _, ok := got["auth-key"]; ok {
-		t.Fatalf("Get() leaked auth-key: %#v", got)
-	}
-	if store.AuthKey() != "admin-secret" {
-		t.Fatalf("AuthKey() = %q, want original external env key", store.AuthKey())
-	}
 	if store.BaseURL() != "https://example.test/root" {
 		t.Fatalf("BaseURL() = %q", store.BaseURL())
 	}
+	assertConfigValue(t, got, "registration_enabled", true)
 
 	envData, err := os.ReadFile(filepath.Join(root, ".env"))
 	if err != nil {
@@ -65,21 +60,18 @@ func TestStoreUpdatePersistsSettingsWithoutAuthKey(t *testing.T) {
 		"CHATGPT2API_USER_DEFAULT_CONCURRENT_LIMIT=2",
 		"CHATGPT2API_USER_DEFAULT_RPM_LIMIT=30",
 		"CHATGPT2API_IMAGE_RETENTION_DAYS=14",
+		"CHATGPT2API_REGISTRATION_ENABLED=true",
 		"CHATGPT2API_LOG_LEVELS=debug,error",
 	} {
 		if !strings.Contains(envText, want) {
 			t.Fatalf(".env missing %q in:\n%s", want, envText)
 		}
 	}
-	if strings.Contains(envText, "CHATGPT2API_AUTH_KEY") || strings.Contains(envText, "new-secret") {
-		t.Fatalf(".env should not persist auth key updates:\n%s", envText)
-	}
 }
 
 func TestStoreNormalizesUnsupportedLoginPageImageMode(t *testing.T) {
 	root := t.TempDir()
 	t.Setenv("CHATGPT2API_ROOT", root)
-	t.Setenv("CHATGPT2API_AUTH_KEY", "admin-secret")
 	unsetEnv(t, "CHATGPT2API_LOGIN_PAGE_IMAGE_MODE")
 	unsetLinuxDoEnv(t)
 
@@ -111,7 +103,6 @@ func TestStoreNormalizesUnsupportedLoginPageImageMode(t *testing.T) {
 func TestStoreUpdatePersistsLinuxDoSettingsWithoutLeakingSecret(t *testing.T) {
 	root := t.TempDir()
 	t.Setenv("CHATGPT2API_ROOT", root)
-	t.Setenv("CHATGPT2API_AUTH_KEY", "admin-secret")
 	unsetLinuxDoEnv(t)
 
 	store, err := NewStore()
@@ -180,7 +171,6 @@ func TestStoreUpdatePersistsLinuxDoSettingsWithoutLeakingSecret(t *testing.T) {
 func TestStoreUpdateRejectsIncompleteLinuxDoSettings(t *testing.T) {
 	root := t.TempDir()
 	t.Setenv("CHATGPT2API_ROOT", root)
-	t.Setenv("CHATGPT2API_AUTH_KEY", "admin-secret")
 	unsetLinuxDoEnv(t)
 
 	store, err := NewStore()
@@ -201,7 +191,6 @@ func TestStoreUpdateRejectsIncompleteLinuxDoSettings(t *testing.T) {
 func TestStoreUpdateRefreshesEnvFileBackedRuntimeSettings(t *testing.T) {
 	root := t.TempDir()
 	envText := strings.Join([]string{
-		"CHATGPT2API_AUTH_KEY=admin-secret",
 		"CHATGPT2API_BASE_URL=https://old.example/root",
 		"CHATGPT2API_PROXY=http://127.0.0.1:8080",
 		"CHATGPT2API_REFRESH_ACCOUNT_INTERVAL_MINUTE=5",
@@ -218,7 +207,6 @@ func TestStoreUpdateRefreshesEnvFileBackedRuntimeSettings(t *testing.T) {
 		t.Fatalf("write .env: %v", err)
 	}
 	t.Setenv("CHATGPT2API_ROOT", root)
-	t.Setenv("CHATGPT2API_AUTH_KEY", "admin-secret")
 	t.Setenv("CHATGPT2API_BASE_URL", "https://old.example/root")
 	t.Setenv("CHATGPT2API_PROXY", "http://127.0.0.1:8080")
 	t.Setenv("CHATGPT2API_REFRESH_ACCOUNT_INTERVAL_MINUTE", "5")
@@ -284,14 +272,12 @@ func TestStoreUpdateRefreshesEnvFileBackedRuntimeSettings(t *testing.T) {
 func TestStoreKeepsDifferentExternalEnvironmentOverride(t *testing.T) {
 	root := t.TempDir()
 	if err := os.WriteFile(filepath.Join(root, ".env"), []byte(strings.Join([]string{
-		"CHATGPT2API_AUTH_KEY=file-secret",
 		"CHATGPT2API_BASE_URL=https://file.example",
 		"",
 	}, "\n")), 0o644); err != nil {
 		t.Fatalf("write .env: %v", err)
 	}
 	t.Setenv("CHATGPT2API_ROOT", root)
-	t.Setenv("CHATGPT2API_AUTH_KEY", "external-secret")
 	t.Setenv("CHATGPT2API_BASE_URL", "https://external.example")
 
 	store, err := NewStore()
@@ -303,9 +289,6 @@ func TestStoreKeepsDifferentExternalEnvironmentOverride(t *testing.T) {
 		t.Fatalf("Update() error = %v", err)
 	}
 	assertConfigValue(t, got, "base_url", "https://external.example")
-	if store.AuthKey() != "external-secret" {
-		t.Fatalf("AuthKey() = %q, want external-secret", store.AuthKey())
-	}
 	if gotEnv := os.Getenv("CHATGPT2API_BASE_URL"); gotEnv != "https://external.example" {
 		t.Fatalf("CHATGPT2API_BASE_URL = %q, want external override unchanged", gotEnv)
 	}
@@ -313,7 +296,7 @@ func TestStoreKeepsDifferentExternalEnvironmentOverride(t *testing.T) {
 
 func TestNewStoreDiscoversEnvFromParentDirectory(t *testing.T) {
 	root := t.TempDir()
-	if err := os.WriteFile(filepath.Join(root, ".env"), []byte("CHATGPT2API_AUTH_KEY=from-parent-env\n"), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(root, ".env"), []byte("CHATGPT2API_BASE_URL=https://parent.example\n"), 0o644); err != nil {
 		t.Fatalf("write .env: %v", err)
 	}
 	nested := filepath.Join(root, "cmd", "chatgpt2api")
@@ -331,7 +314,7 @@ func TestNewStoreDiscoversEnvFromParentDirectory(t *testing.T) {
 		_ = os.Chdir(originalWD)
 	})
 	unsetEnv(t, "CHATGPT2API_ROOT")
-	unsetEnv(t, "CHATGPT2API_AUTH_KEY")
+	unsetEnv(t, "CHATGPT2API_BASE_URL")
 
 	store, err := NewStore()
 	if err != nil {
@@ -340,8 +323,8 @@ func TestNewStoreDiscoversEnvFromParentDirectory(t *testing.T) {
 	if store.RootDir != root {
 		t.Fatalf("RootDir = %q, want %q", store.RootDir, root)
 	}
-	if store.AuthKey() != "from-parent-env" {
-		t.Fatalf("AuthKey() = %q", store.AuthKey())
+	if store.BaseURL() != "https://parent.example" {
+		t.Fatalf("BaseURL() = %q", store.BaseURL())
 	}
 }
 

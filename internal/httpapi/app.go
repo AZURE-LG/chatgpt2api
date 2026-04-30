@@ -66,6 +66,14 @@ func NewApp() (*App, error) {
 	proxy := service.NewProxyService(cfg)
 	accounts := service.NewAccountService(storageBackend, cfg, proxy, logs)
 	auth := service.NewAuthService(storageBackend)
+	bootstrap, err := auth.EnsureBootstrapAdmin(cfg.AdminUsername(), cfg.AdminPassword())
+	if err != nil {
+		cancel()
+		return nil, err
+	}
+	if bootstrap.Created && bootstrap.Generated {
+		fmt.Fprintf(os.Stderr, "bootstrap admin password generated: username=%s password=%s\n", bootstrap.Username, bootstrap.Password)
+	}
 	documentStore, _ := storageBackend.(storage.JSONDocumentBackend)
 	engine := &protocol.Engine{Accounts: accounts, Config: cfg, Storage: documentStore, Proxy: proxy, Logger: logger}
 	app := &App{config: cfg, auth: auth, accounts: accounts, logs: logs, logger: logger, proxy: proxy, engine: engine, images: service.NewImageService(cfg, storageBackend), announce: service.NewAnnouncementService(cfg.DataDir, storageBackend), cpa: service.NewCPAConfig(cfg.DataDir, storageBackend), sub2: service.NewSub2APIConfig(cfg.DataDir, storageBackend), cancel: cancel}
@@ -296,24 +304,71 @@ func (a *App) writeProtocolError(w http.ResponseWriter, err error) {
 }
 
 func (a *App) handleLogin(w http.ResponseWriter, r *http.Request) {
+	body, err := readJSONMap(r)
+	if err != nil {
+		util.WriteError(w, http.StatusBadRequest, "invalid json body")
+		return
+	}
+	identity, token, err := a.auth.LoginPassword(util.Clean(body["username"]), util.Clean(body["password"]))
+	if err != nil {
+		util.WriteError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	a.writeLoginResponse(w, *identity, token)
+}
+
+func (a *App) handleSession(w http.ResponseWriter, r *http.Request) {
 	identity, ok := a.requireIdentity(w, r, "")
 	if !ok {
 		return
 	}
-	util.WriteJSON(w, http.StatusOK, map[string]any{
+	a.writeLoginResponse(w, identity, "")
+}
+
+func (a *App) handleAccountRegister(w http.ResponseWriter, r *http.Request) {
+	if !a.config.RegistrationEnabled() {
+		util.WriteError(w, http.StatusForbidden, "registration is disabled")
+		return
+	}
+	body, err := readJSONMap(r)
+	if err != nil {
+		util.WriteError(w, http.StatusBadRequest, "invalid json body")
+		return
+	}
+	identity, token, err := a.auth.RegisterPasswordUser(util.Clean(body["username"]), util.Clean(body["password"]), util.Clean(body["name"]))
+	if err != nil {
+		util.WriteError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	a.writeLoginResponse(w, *identity, token)
+}
+
+func (a *App) writeLoginResponse(w http.ResponseWriter, identity service.Identity, token string) {
+	permissions := a.identityPermissions(identity)
+	payload := map[string]any{
 		"ok":              true,
 		"version":         version.Get(),
+		"token":           token,
 		"role":            identity.Role,
+		"role_id":         identity.RoleID,
+		"role_name":       identity.RoleName,
 		"subject_id":      identity.ID,
 		"name":            identity.Name,
 		"provider":        identity.Provider,
 		"credential_id":   identity.CredentialID,
 		"credential_name": identity.CredentialName,
-	})
+		"menu_paths":      permissions.MenuPaths,
+		"api_permissions": permissions.APIPermissions,
+		"menus":           service.FilterMenuPermissions(permissions.MenuPaths),
+	}
+	if token == "" {
+		delete(payload, "token")
+	}
+	util.WriteJSON(w, http.StatusOK, payload)
 }
 
 func (a *App) handleSettings(w http.ResponseWriter, r *http.Request) {
-	if _, ok := a.requireAdmin(w, r); !ok {
+	if _, ok := a.requireIdentity(w, r, ""); !ok {
 		return
 	}
 	switch r.Method {
@@ -348,8 +403,15 @@ func (a *App) handleAppMeta(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+func (a *App) handlePermissionCatalog(w http.ResponseWriter, r *http.Request) {
+	if _, ok := a.requireIdentity(w, r, ""); !ok {
+		return
+	}
+	util.WriteJSON(w, http.StatusOK, a.auth.PermissionCatalog())
+}
+
 func (a *App) handleLoginPageImageSettings(w http.ResponseWriter, r *http.Request) {
-	if _, ok := a.requireAdmin(w, r); !ok {
+	if _, ok := a.requireIdentity(w, r, ""); !ok {
 		return
 	}
 	if r.Method != http.MethodPost {
@@ -531,10 +593,6 @@ func (a *App) handleImages(w http.ResponseWriter, r *http.Request) {
 		a.decorateImageList(payload)
 		util.WriteJSON(w, http.StatusOK, payload)
 	case http.MethodDelete:
-		if identity.Role != service.AuthRoleAdmin {
-			util.WriteError(w, http.StatusForbidden, "admin permission required")
-			return
-		}
 		body, err := readJSONMap(r)
 		if err != nil {
 			util.WriteError(w, http.StatusBadRequest, "invalid json body")
@@ -630,14 +688,14 @@ func imageThumbnailRequestPath(r *http.Request) (string, error) {
 }
 
 func (a *App) handleLogs(w http.ResponseWriter, r *http.Request) {
-	if _, ok := a.requireAdmin(w, r); !ok {
+	if _, ok := a.requireIdentity(w, r, ""); !ok {
 		return
 	}
 	util.WriteJSON(w, http.StatusOK, map[string]any{"items": a.logs.List(strings.TrimSpace(r.URL.Query().Get("type")), strings.TrimSpace(r.URL.Query().Get("start_date")), strings.TrimSpace(r.URL.Query().Get("end_date")), 200)})
 }
 
 func (a *App) handleStorageInfo(w http.ResponseWriter, r *http.Request) {
-	if _, ok := a.requireAdmin(w, r); !ok {
+	if _, ok := a.requireIdentity(w, r, ""); !ok {
 		return
 	}
 	backend, err := a.config.StorageBackend()
@@ -649,7 +707,7 @@ func (a *App) handleStorageInfo(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *App) handleProxy(w http.ResponseWriter, r *http.Request) {
-	if _, ok := a.requireAdmin(w, r); !ok {
+	if _, ok := a.requireIdentity(w, r, ""); !ok {
 		return
 	}
 	if r.URL.Path == "/api/proxy/test" {
@@ -692,26 +750,49 @@ func (a *App) requireIdentity(w http.ResponseWriter, r *http.Request, overrideAu
 		auth = r.Header.Get("Authorization")
 	}
 	token := extractBearerToken(auth)
-	if token != "" && token == a.config.AuthKey() {
-		return service.Identity{ID: "admin", Name: "管理员", Role: service.AuthRoleAdmin, Provider: service.AuthProviderLocal, Kind: service.AuthKindSession}, true
-	}
 	if identity := a.auth.Authenticate(token); identity != nil {
+		if !a.identityCanAccessRequest(*identity, r) {
+			util.WriteError(w, http.StatusForbidden, "permission denied")
+			return service.Identity{}, false
+		}
 		return *identity, true
 	}
 	util.WriteError(w, http.StatusUnauthorized, "authorization is invalid")
 	return service.Identity{}, false
 }
 
-func (a *App) requireAdmin(w http.ResponseWriter, r *http.Request) (service.Identity, bool) {
-	identity, ok := a.requireIdentity(w, r, "")
-	if !ok {
-		return service.Identity{}, false
+func (a *App) identityPermissions(identity service.Identity) service.PermissionSet {
+	if identity.Role == service.AuthRoleAdmin {
+		return service.DefaultPermissionSetForRole(service.AuthRoleAdmin)
 	}
-	if identity.Role != "admin" {
-		util.WriteError(w, http.StatusForbidden, "admin permission required")
-		return service.Identity{}, false
+	return service.PermissionSet{
+		MenuPaths:      service.NormalizeMenuPermissions(identity.MenuPaths),
+		APIPermissions: service.NormalizeAPIPermissions(identity.APIPermissions),
 	}
-	return identity, true
+}
+
+func (a *App) identityCanAccessRequest(identity service.Identity, r *http.Request) bool {
+	if identity.Role == service.AuthRoleAdmin || isPermissionCheckSkipped(r.URL.Path) {
+		return true
+	}
+	return service.HasAPIPermission(a.identityPermissions(identity), r.Method, r.URL.Path)
+}
+
+func isPermissionCheckSkipped(path string) bool {
+	switch path {
+	case "/auth/login":
+		return true
+	case "/auth/session":
+		return true
+	case "/api/profile":
+		return true
+	case "/api/profile/password":
+		return true
+	case "/api/profile/api-key":
+		return true
+	default:
+		return strings.HasPrefix(path, "/api/profile/api-key/")
+	}
 }
 
 func extractBearerToken(auth string) string {

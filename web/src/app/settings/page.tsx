@@ -2,7 +2,6 @@
 
 import { useEffect, useRef, type ReactNode } from "react";
 import { LoaderCircle } from "lucide-react";
-import { Navigate } from "react-router-dom";
 
 import { useAuthGuard } from "@/lib/use-auth-guard";
 
@@ -85,7 +84,7 @@ function AdminSettingsPageContent() {
 }
 
 export default function SettingsPage() {
-  const { isCheckingAuth, session } = useAuthGuard(["admin", "user"]);
+  const { isCheckingAuth, session } = useAuthGuard(undefined, "/settings");
 
   if (isCheckingAuth || !session) {
     return (
@@ -95,8 +94,5 @@ export default function SettingsPage() {
     );
   }
 
-  if (session.role === "admin") {
-    return <AdminSettingsPageContent />;
-  }
-  return <Navigate to="/image" replace />;
+  return <AdminSettingsPageContent />;
 }

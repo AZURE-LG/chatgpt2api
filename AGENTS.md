@@ -1,17 +1,19 @@
 # Repository Guidelines
 
+## Coding Principles
+
+**No compatibility layers**
+Write for the current API version only. Do not add fallbacks, shims, feature flags, or multi-path handling unless explicitly asked. Prefer deleting old code over guarding it.
+
 ## Project Structure & Module Organization
 
 This repository is a Go backend with a Vite/React admin UI. The backend entry point is `cmd/chatgpt2api/main.go`; implementation packages live under `internal/` (`httpapi`, `service`, `protocol`, `backend`, `storage`, `config`, and helpers). Frontend source is in `web/src/`, with pages under `web/src/app/`, shared UI in `web/src/components/`, API helpers in `web/src/lib/`, and stores in `web/src/store/`. Screenshots are in `assets/`; operational notes are in `docs/`.
-
-## Rule
-**Do not write compatibility code**
 
 ## Build, Test, and Development Commands
 
 - `go test ./...` runs all backend tests.
 - `go build -ldflags "-X chatgpt2api/internal/version.Version=1.0.0" -o chatgpt2api ./cmd/chatgpt2api` builds the service binary.
-- `CHATGPT2API_AUTH_KEY=your_secret_key ./chatgpt2api` runs the backend locally after build.
+- `CHATGPT2API_ADMIN_PASSWORD=change_me_please ./chatgpt2api` runs the backend locally after build.
 - `docker compose up -d` starts the default containerized deployment using `.env`.
 - `docker compose -f docker-compose.yml -f docker-compose.build.yml up -d --build` rebuilds the image from local source.
 - `cd web && npm run dev` starts the frontend dev server.
@@ -36,4 +38,4 @@ Recent history uses Conventional Commit-style subjects such as `feat: ...`, `cho
 
 ## Security & Configuration Tips
 
-Do not commit real secrets. Start from `.env.example`, set `CHATGPT2API_AUTH_KEY`, and keep account tokens, proxy credentials, and database URLs local or in deployment secrets. Public deployments should add external access control.
+Do not commit real secrets. Start from `.env.example`, set `CHATGPT2API_ADMIN_PASSWORD`, and keep account tokens, proxy credentials, and database URLs local or in deployment secrets. Public deployments should add external access control.

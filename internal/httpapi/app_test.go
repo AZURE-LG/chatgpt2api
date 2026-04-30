@@ -39,7 +39,7 @@ func TestAppAuthAndSPACompatibility(t *testing.T) {
 	}
 
 	req := httptest.NewRequest(http.MethodGet, "/api/auth/users/"+user["id"].(string)+"/key", nil)
-	req.Header.Set("Authorization", "Bearer admin-secret")
+	req.Header.Set("Authorization", adminAuthHeader(t, app))
 	res := httptest.NewRecorder()
 	app.Handler().ServeHTTP(res, req)
 	if res.Code != http.StatusOK {
@@ -53,12 +53,12 @@ func TestAppAuthAndSPACompatibility(t *testing.T) {
 		t.Fatalf("revealed key = %#v, want raw key", revealed["key"])
 	}
 
-	req = httptest.NewRequest(http.MethodPost, "/auth/login", nil)
+	req = httptest.NewRequest(http.MethodGet, "/auth/session", nil)
 	req.Header.Set("Authorization", "Bearer "+rawKey)
 	res = httptest.NewRecorder()
 	app.Handler().ServeHTTP(res, req)
 	if res.Code != http.StatusOK {
-		t.Fatalf("/auth/login status = %d body = %s", res.Code, res.Body.String())
+		t.Fatalf("/auth/session status = %d body = %s", res.Code, res.Body.String())
 	}
 	var login map[string]any
 	if err := json.Unmarshal(res.Body.Bytes(), &login); err != nil {
@@ -100,7 +100,7 @@ func TestAppAuthAndSPACompatibility(t *testing.T) {
 	}
 
 	req = httptest.NewRequest(http.MethodPost, "/api/admin/announcements", strings.NewReader(`{"title":"通知 A","content":"今晚维护","show_login":true,"show_image":false}`))
-	req.Header.Set("Authorization", "Bearer admin-secret")
+	req.Header.Set("Authorization", adminAuthHeader(t, app))
 	res = httptest.NewRecorder()
 	app.Handler().ServeHTTP(res, req)
 	if res.Code != http.StatusOK {
@@ -117,7 +117,7 @@ func TestAppAuthAndSPACompatibility(t *testing.T) {
 	}
 
 	req = httptest.NewRequest(http.MethodPost, "/api/admin/announcements", strings.NewReader(`{"title":"通知 B","content":"画图页公告","show_login":false,"show_image":true}`))
-	req.Header.Set("Authorization", "Bearer admin-secret")
+	req.Header.Set("Authorization", adminAuthHeader(t, app))
 	res = httptest.NewRecorder()
 	app.Handler().ServeHTTP(res, req)
 	if res.Code != http.StatusOK {
@@ -125,7 +125,7 @@ func TestAppAuthAndSPACompatibility(t *testing.T) {
 	}
 
 	req = httptest.NewRequest(http.MethodGet, "/api/admin/announcements", nil)
-	req.Header.Set("Authorization", "Bearer admin-secret")
+	req.Header.Set("Authorization", adminAuthHeader(t, app))
 	res = httptest.NewRecorder()
 	app.Handler().ServeHTTP(res, req)
 	if res.Code != http.StatusOK {
@@ -153,7 +153,7 @@ func TestAppAuthAndSPACompatibility(t *testing.T) {
 	}
 
 	req = httptest.NewRequest(http.MethodPost, "/api/admin/announcements/"+createdID, strings.NewReader(`{"enabled":false}`))
-	req.Header.Set("Authorization", "Bearer admin-secret")
+	req.Header.Set("Authorization", adminAuthHeader(t, app))
 	res = httptest.NewRecorder()
 	app.Handler().ServeHTTP(res, req)
 	if res.Code != http.StatusOK {
@@ -196,6 +196,145 @@ func TestAppAuthAndSPACompatibility(t *testing.T) {
 	}
 }
 
+func TestPasswordAccountLoginAndRegistrationToggle(t *testing.T) {
+	app := newTestApp(t)
+	defer app.Close()
+
+	req := httptest.NewRequest(http.MethodPost, "/auth/login", strings.NewReader(`{"username":"admin","password":"AdminPass123!"}`))
+	res := httptest.NewRecorder()
+	app.Handler().ServeHTTP(res, req)
+	if res.Code != http.StatusOK {
+		t.Fatalf("admin password login status = %d body = %s", res.Code, res.Body.String())
+	}
+	var login map[string]any
+	if err := json.Unmarshal(res.Body.Bytes(), &login); err != nil {
+		t.Fatalf("login json: %v", err)
+	}
+	adminToken, _ := login["token"].(string)
+	if adminToken == "" || login["role"] != service.AuthRoleAdmin || login["subject_id"] != "admin" {
+		t.Fatalf("admin login body = %#v", login)
+	}
+
+	req = httptest.NewRequest(http.MethodPost, "/auth/register", strings.NewReader(`{"username":"alice","password":"Password123","name":"Alice"}`))
+	res = httptest.NewRecorder()
+	app.Handler().ServeHTTP(res, req)
+	if res.Code != http.StatusForbidden {
+		t.Fatalf("disabled registration status = %d body = %s", res.Code, res.Body.String())
+	}
+
+	req = httptest.NewRequest(http.MethodPost, "/api/settings", strings.NewReader(`{"registration_enabled":true}`))
+	req.Header.Set("Authorization", "Bearer "+adminToken)
+	res = httptest.NewRecorder()
+	app.Handler().ServeHTTP(res, req)
+	if res.Code != http.StatusOK {
+		t.Fatalf("enable registration status = %d body = %s", res.Code, res.Body.String())
+	}
+
+	req = httptest.NewRequest(http.MethodPost, "/auth/register", strings.NewReader(`{"username":"alice","password":"Password123","name":"Alice"}`))
+	res = httptest.NewRecorder()
+	app.Handler().ServeHTTP(res, req)
+	if res.Code != http.StatusOK {
+		t.Fatalf("enabled registration status = %d body = %s", res.Code, res.Body.String())
+	}
+	var registered map[string]any
+	if err := json.Unmarshal(res.Body.Bytes(), &registered); err != nil {
+		t.Fatalf("register json: %v", err)
+	}
+	userToken, _ := registered["token"].(string)
+	if userToken == "" || registered["role"] != service.AuthRoleUser || registered["name"] != "Alice" {
+		t.Fatalf("register body = %#v", registered)
+	}
+	if registered["role_id"] != service.DefaultManagedRoleID {
+		t.Fatalf("registered role fields = %#v", registered)
+	}
+
+	req = httptest.NewRequest(http.MethodGet, "/auth/session", nil)
+	req.Header.Set("Authorization", "Bearer "+userToken)
+	res = httptest.NewRecorder()
+	app.Handler().ServeHTTP(res, req)
+	if res.Code != http.StatusOK {
+		t.Fatalf("registered session status = %d body = %s", res.Code, res.Body.String())
+	}
+}
+
+func TestProfileAccountNameAndPasswordUpdates(t *testing.T) {
+	app := newTestApp(t)
+	defer app.Close()
+
+	user, token, err := app.auth.RegisterPasswordUser("alice", "Password123", "Alice")
+	if err != nil {
+		t.Fatalf("RegisterPasswordUser() error = %v", err)
+	}
+	if user.Name != "Alice" || token == "" {
+		t.Fatalf("registered identity=%#v token=%q", user, token)
+	}
+
+	req := httptest.NewRequest(http.MethodPost, "/api/profile", strings.NewReader(`{"name":"Alice Updated"}`))
+	req.Header.Set("Authorization", "Bearer "+token)
+	res := httptest.NewRecorder()
+	app.Handler().ServeHTTP(res, req)
+	if res.Code != http.StatusOK {
+		t.Fatalf("profile name update status = %d body = %s", res.Code, res.Body.String())
+	}
+	var profile map[string]any
+	if err := json.Unmarshal(res.Body.Bytes(), &profile); err != nil {
+		t.Fatalf("profile update json: %v", err)
+	}
+	if profile["name"] != "Alice Updated" || profile["subject_id"] != user.ID {
+		t.Fatalf("profile update body = %#v", profile)
+	}
+
+	req = httptest.NewRequest(http.MethodGet, "/auth/session", nil)
+	req.Header.Set("Authorization", "Bearer "+token)
+	res = httptest.NewRecorder()
+	app.Handler().ServeHTTP(res, req)
+	if res.Code != http.StatusOK {
+		t.Fatalf("session after profile update status = %d body = %s", res.Code, res.Body.String())
+	}
+	if err := json.Unmarshal(res.Body.Bytes(), &profile); err != nil {
+		t.Fatalf("session after profile update json: %v", err)
+	}
+	if profile["name"] != "Alice Updated" {
+		t.Fatalf("session did not reflect updated name: %#v", profile)
+	}
+
+	req = httptest.NewRequest(http.MethodPost, "/api/profile/password", strings.NewReader(`{"current_password":"wrong-password","new_password":"NewPassword123"}`))
+	req.Header.Set("Authorization", "Bearer "+token)
+	res = httptest.NewRecorder()
+	app.Handler().ServeHTTP(res, req)
+	if res.Code != http.StatusBadRequest {
+		t.Fatalf("wrong current password status = %d body = %s", res.Code, res.Body.String())
+	}
+
+	req = httptest.NewRequest(http.MethodPost, "/api/profile/password", strings.NewReader(`{"current_password":"Password123","new_password":"NewPassword123"}`))
+	req.Header.Set("Authorization", "Bearer "+token)
+	res = httptest.NewRecorder()
+	app.Handler().ServeHTTP(res, req)
+	if res.Code != http.StatusOK {
+		t.Fatalf("password update status = %d body = %s", res.Code, res.Body.String())
+	}
+
+	req = httptest.NewRequest(http.MethodPost, "/auth/login", strings.NewReader(`{"username":"alice","password":"Password123"}`))
+	res = httptest.NewRecorder()
+	app.Handler().ServeHTTP(res, req)
+	if res.Code != http.StatusBadRequest {
+		t.Fatalf("old password login status = %d body = %s", res.Code, res.Body.String())
+	}
+
+	req = httptest.NewRequest(http.MethodPost, "/auth/login", strings.NewReader(`{"username":"alice","password":"NewPassword123"}`))
+	res = httptest.NewRecorder()
+	app.Handler().ServeHTTP(res, req)
+	if res.Code != http.StatusOK {
+		t.Fatalf("new password login status = %d body = %s", res.Code, res.Body.String())
+	}
+	if err := json.Unmarshal(res.Body.Bytes(), &profile); err != nil {
+		t.Fatalf("new password login json: %v", err)
+	}
+	if profile["name"] != "Alice Updated" || profile["subject_id"] != user.ID {
+		t.Fatalf("new password login body = %#v", profile)
+	}
+}
+
 func TestImageTaskFailureWritesCallLog(t *testing.T) {
 	app := newTestApp(t)
 	defer app.Close()
@@ -217,7 +356,7 @@ func TestImageTaskFailureWritesCallLog(t *testing.T) {
 	deadline := time.Now().Add(2 * time.Second)
 	for time.Now().Before(deadline) {
 		req = httptest.NewRequest(http.MethodGet, "/api/logs?type=call", nil)
-		req.Header.Set("Authorization", "Bearer admin-secret")
+		req.Header.Set("Authorization", adminAuthHeader(t, app))
 		res = httptest.NewRecorder()
 		app.Handler().ServeHTTP(res, req)
 		if res.Code != http.StatusOK {
@@ -262,7 +401,7 @@ func TestEmptyCollectionEndpointsReturnArrays(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			req := httptest.NewRequest(http.MethodGet, tc.path, nil)
-			req.Header.Set("Authorization", "Bearer admin-secret")
+			req.Header.Set("Authorization", adminAuthHeader(t, app))
 			res := httptest.NewRecorder()
 			app.Handler().ServeHTTP(res, req)
 			if res.Code != http.StatusOK {
@@ -279,6 +418,127 @@ func TestEmptyCollectionEndpointsReturnArrays(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestRBACPermissionsGateManagementAPIs(t *testing.T) {
+	app := newTestApp(t)
+	defer app.Close()
+
+	user, rawKey, err := app.auth.CreateAPIKey(service.AuthRoleUser, "operator", service.AuthOwner{})
+	if err != nil {
+		t.Fatalf("CreateAPIKey() error = %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/api/accounts", nil)
+	req.Header.Set("Authorization", "Bearer "+rawKey)
+	res := httptest.NewRecorder()
+	app.Handler().ServeHTTP(res, req)
+	if res.Code != http.StatusForbidden {
+		t.Fatalf("default user accounts status = %d body = %s", res.Code, res.Body.String())
+	}
+
+	role, err := app.auth.CreateRole(map[string]any{
+		"name":            "accounts viewer",
+		"menu_paths":      []string{"/accounts"},
+		"api_permissions": []string{service.APIPermissionKey(http.MethodGet, "/api/accounts")},
+	})
+	if err != nil {
+		t.Fatalf("CreateRole() error = %v", err)
+	}
+	userID := user["id"].(string)
+	updated := app.auth.UpdateUser(userID, map[string]any{"role_id": role["id"]})
+	if updated == nil {
+		t.Fatal("UpdateUser() returned nil")
+	}
+
+	req = httptest.NewRequest(http.MethodGet, "/auth/session", nil)
+	req.Header.Set("Authorization", "Bearer "+rawKey)
+	res = httptest.NewRecorder()
+	app.Handler().ServeHTTP(res, req)
+	if res.Code != http.StatusOK {
+		t.Fatalf("login after permission update status = %d body = %s", res.Code, res.Body.String())
+	}
+	var login map[string]any
+	if err := json.Unmarshal(res.Body.Bytes(), &login); err != nil {
+		t.Fatalf("login json: %v", err)
+	}
+	if paths := util.AsStringSlice(login["menu_paths"]); len(paths) != 1 || paths[0] != "/accounts" {
+		t.Fatalf("login menu_paths = %#v", login["menu_paths"])
+	}
+	if login["role_id"] != role["id"] || login["role_name"] != "accounts viewer" {
+		t.Fatalf("login role fields = %#v", login)
+	}
+
+	req = httptest.NewRequest(http.MethodGet, "/api/accounts", nil)
+	req.Header.Set("Authorization", "Bearer "+rawKey)
+	res = httptest.NewRecorder()
+	app.Handler().ServeHTTP(res, req)
+	if res.Code != http.StatusOK {
+		t.Fatalf("granted user accounts status = %d body = %s", res.Code, res.Body.String())
+	}
+
+	req = httptest.NewRequest(http.MethodPost, "/api/accounts", strings.NewReader(`{"tokens":["x"]}`))
+	req.Header.Set("Authorization", "Bearer "+rawKey)
+	res = httptest.NewRecorder()
+	app.Handler().ServeHTTP(res, req)
+	if res.Code != http.StatusForbidden {
+		t.Fatalf("ungranted write accounts status = %d body = %s", res.Code, res.Body.String())
+	}
+}
+
+func TestRBACImageDeletePermissionAllowsDelegatedUser(t *testing.T) {
+	app := newTestApp(t)
+	defer app.Close()
+
+	user, rawKey, err := app.auth.CreateAPIKey(service.AuthRoleUser, "image-operator", service.AuthOwner{})
+	if err != nil {
+		t.Fatalf("CreateAPIKey() error = %v", err)
+	}
+	imageRel := "delegated-delete.png"
+	imagePath := filepath.Join(app.config.ImagesDir(), filepath.FromSlash(imageRel))
+	if err := writeHTTPTestPNG(imagePath); err != nil {
+		t.Fatalf("write test image: %v", err)
+	}
+	app.images.RecordGeneratedImages([]string{imageRel}, "another-owner", "Another Owner", service.ImageVisibilityPrivate)
+
+	req := httptest.NewRequest(http.MethodDelete, "/api/images", strings.NewReader(`{"paths":["delegated-delete.png"]}`))
+	req.Header.Set("Authorization", "Bearer "+rawKey)
+	res := httptest.NewRecorder()
+	app.Handler().ServeHTTP(res, req)
+	if res.Code != http.StatusForbidden {
+		t.Fatalf("default user delete status = %d body = %s", res.Code, res.Body.String())
+	}
+
+	role, err := app.auth.CreateRole(map[string]any{
+		"name":            "image manager",
+		"menu_paths":      []string{"/image-manager"},
+		"api_permissions": []string{service.APIPermissionKey(http.MethodDelete, "/api/images")},
+	})
+	if err != nil {
+		t.Fatalf("CreateRole() error = %v", err)
+	}
+	updated := app.auth.UpdateUser(user["id"].(string), map[string]any{"role_id": role["id"]})
+	if updated == nil {
+		t.Fatal("UpdateUser() returned nil")
+	}
+
+	req = httptest.NewRequest(http.MethodDelete, "/api/images", strings.NewReader(`{"paths":["delegated-delete.png"]}`))
+	req.Header.Set("Authorization", "Bearer "+rawKey)
+	res = httptest.NewRecorder()
+	app.Handler().ServeHTTP(res, req)
+	if res.Code != http.StatusOK {
+		t.Fatalf("granted user delete status = %d body = %s", res.Code, res.Body.String())
+	}
+	var payload map[string]any
+	if err := json.Unmarshal(res.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("delete json: %v", err)
+	}
+	if deleted, _ := payload["deleted"].(float64); int(deleted) != 1 {
+		t.Fatalf("deleted = %#v body = %#v", payload["deleted"], payload)
+	}
+	if _, err := os.Stat(imagePath); !os.IsNotExist(err) {
+		t.Fatalf("image path still exists or stat failed unexpectedly: %v", err)
 	}
 }
 
@@ -319,7 +579,7 @@ func TestLoginPageImageUploadSettings(t *testing.T) {
 	}
 
 	req = httptest.NewRequest(http.MethodPost, "/api/settings/login-page-image", body)
-	req.Header.Set("Authorization", "Bearer admin-secret")
+	req.Header.Set("Authorization", adminAuthHeader(t, app))
 	req.Header.Set("Content-Type", writer.FormDataContentType())
 	res = httptest.NewRecorder()
 	app.Handler().ServeHTTP(res, req)
@@ -490,7 +750,7 @@ func TestImageManagementIsScopedByOwner(t *testing.T) {
 	}
 
 	req = httptest.NewRequest(http.MethodGet, "/api/images", nil)
-	req.Header.Set("Authorization", "Bearer admin-secret")
+	req.Header.Set("Authorization", adminAuthHeader(t, app))
 	res = httptest.NewRecorder()
 	app.Handler().ServeHTTP(res, req)
 	if res.Code != http.StatusOK {
@@ -504,7 +764,7 @@ func TestImageManagementIsScopedByOwner(t *testing.T) {
 	}
 
 	req = httptest.NewRequest(http.MethodDelete, "/api/images", strings.NewReader(`{"paths":["`+aliceRel+`"]}`))
-	req.Header.Set("Authorization", "Bearer admin-secret")
+	req.Header.Set("Authorization", adminAuthHeader(t, app))
 	res = httptest.NewRecorder()
 	app.Handler().ServeHTTP(res, req)
 	if res.Code != http.StatusOK {
@@ -536,7 +796,7 @@ func TestImageThumbnailsAreGeneratedOnDemand(t *testing.T) {
 	}
 
 	req := httptest.NewRequest(http.MethodGet, "/api/images", nil)
-	req.Header.Set("Authorization", "Bearer admin-secret")
+	req.Header.Set("Authorization", adminAuthHeader(t, app))
 	res := httptest.NewRecorder()
 	app.Handler().ServeHTTP(res, req)
 	if res.Code != http.StatusOK {
@@ -675,7 +935,7 @@ func TestLinuxDoUserCanManageOwnKeys(t *testing.T) {
 	}
 
 	req = httptest.NewRequest(http.MethodGet, "/api/auth/users", nil)
-	req.Header.Set("Authorization", "Bearer admin-secret")
+	req.Header.Set("Authorization", adminAuthHeader(t, app))
 	res = httptest.NewRecorder()
 	app.Handler().ServeHTTP(res, req)
 	if res.Code != http.StatusOK {
@@ -698,6 +958,113 @@ func TestLinuxDoUserCanManageOwnKeys(t *testing.T) {
 	app.Handler().ServeHTTP(res, req)
 	if res.Code != http.StatusForbidden {
 		t.Fatalf("unowned user key manage status = %d body = %s", res.Code, res.Body.String())
+	}
+}
+
+func TestProfileAPIKeyIsPersonalAndPermissionIndependent(t *testing.T) {
+	app := newTestApp(t)
+	defer app.Close()
+
+	user, _, err := app.auth.RegisterPasswordUser("alice", "Password123", "Alice")
+	if err != nil {
+		t.Fatalf("RegisterPasswordUser() error = %v", err)
+	}
+	role, err := app.auth.CreateRole(map[string]any{
+		"name":            "creative only",
+		"menu_paths":      []string{"/image"},
+		"api_permissions": []string{service.APIPermissionKey("GET", "/v1/models")},
+	})
+	if err != nil {
+		t.Fatalf("CreateRole() error = %v", err)
+	}
+	if updated := app.auth.UpdateUser(user.ID, map[string]any{"role_id": role["id"]}); updated == nil {
+		t.Fatal("UpdateUser(role) returned nil")
+	}
+	_, userSession, err := app.auth.LoginPassword("alice", "Password123")
+	if err != nil {
+		t.Fatalf("LoginPassword(user) error = %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/api/auth/users", nil)
+	req.Header.Set("Authorization", "Bearer "+userSession)
+	res := httptest.NewRecorder()
+	app.Handler().ServeHTTP(res, req)
+	if res.Code != http.StatusForbidden {
+		t.Fatalf("restricted user /api/auth/users status = %d body = %s", res.Code, res.Body.String())
+	}
+
+	req = httptest.NewRequest(http.MethodGet, "/api/profile/api-key", nil)
+	req.Header.Set("Authorization", "Bearer "+userSession)
+	res = httptest.NewRecorder()
+	app.Handler().ServeHTTP(res, req)
+	if res.Code != http.StatusOK {
+		t.Fatalf("profile key list status = %d body = %s", res.Code, res.Body.String())
+	}
+	var list map[string]any
+	if err := json.Unmarshal(res.Body.Bytes(), &list); err != nil {
+		t.Fatalf("profile key list json: %v", err)
+	}
+	if items := logItems(list); len(items) != 0 {
+		t.Fatalf("new profile key list should be empty: %#v", list)
+	}
+
+	req = httptest.NewRequest(http.MethodPost, "/api/profile/api-key", strings.NewReader(`{"name":"Alice API"}`))
+	req.Header.Set("Authorization", "Bearer "+userSession)
+	res = httptest.NewRecorder()
+	app.Handler().ServeHTTP(res, req)
+	if res.Code != http.StatusOK {
+		t.Fatalf("profile key create status = %d body = %s", res.Code, res.Body.String())
+	}
+	var created map[string]any
+	if err := json.Unmarshal(res.Body.Bytes(), &created); err != nil {
+		t.Fatalf("profile key create json: %v", err)
+	}
+	item, _ := created["item"].(map[string]any)
+	firstID, _ := item["id"].(string)
+	firstKey, _ := created["key"].(string)
+	if firstID == "" || firstKey == "" || item["owner_id"] != user.ID || item["role"] != service.AuthRoleUser {
+		t.Fatalf("profile key create body = %#v", created)
+	}
+
+	req = httptest.NewRequest(http.MethodPost, "/api/profile/api-key", strings.NewReader(`{"name":"Alice API rotated"}`))
+	req.Header.Set("Authorization", "Bearer "+userSession)
+	res = httptest.NewRecorder()
+	app.Handler().ServeHTTP(res, req)
+	if res.Code != http.StatusOK {
+		t.Fatalf("profile key rotate status = %d body = %s", res.Code, res.Body.String())
+	}
+	if err := json.Unmarshal(res.Body.Bytes(), &created); err != nil {
+		t.Fatalf("profile key rotate json: %v", err)
+	}
+	item, _ = created["item"].(map[string]any)
+	rotatedKey, _ := created["key"].(string)
+	if item["id"] != firstID || rotatedKey == "" || rotatedKey == firstKey {
+		t.Fatalf("profile key rotate body = %#v first=%q", created, firstKey)
+	}
+	if app.auth.Authenticate(firstKey) != nil {
+		t.Fatal("old profile API key still authenticated after rotation")
+	}
+	if identity := app.auth.Authenticate(rotatedKey); identity == nil || identity.ID != user.ID || identity.RoleID != role["id"] {
+		t.Fatalf("rotated profile API identity = %#v", identity)
+	}
+
+	req = httptest.NewRequest(http.MethodPost, "/api/profile/api-key", strings.NewReader(`{"name":"Admin API"}`))
+	req.Header.Set("Authorization", adminAuthHeader(t, app))
+	res = httptest.NewRecorder()
+	app.Handler().ServeHTTP(res, req)
+	if res.Code != http.StatusOK {
+		t.Fatalf("admin profile key create status = %d body = %s", res.Code, res.Body.String())
+	}
+	if err := json.Unmarshal(res.Body.Bytes(), &created); err != nil {
+		t.Fatalf("admin profile key create json: %v", err)
+	}
+	adminKey, _ := created["key"].(string)
+	item, _ = created["item"].(map[string]any)
+	if adminKey == "" || item["role"] != service.AuthRoleAdmin || item["owner_id"] != service.AuthRoleAdmin {
+		t.Fatalf("admin profile key body = %#v", created)
+	}
+	if identity := app.auth.Authenticate(adminKey); identity == nil || identity.Role != service.AuthRoleAdmin {
+		t.Fatalf("admin profile API identity = %#v", identity)
 	}
 }
 
@@ -748,7 +1115,7 @@ func TestAdminUsersManageLinuxDoUsers(t *testing.T) {
 	}
 
 	req = httptest.NewRequest(http.MethodGet, "/api/admin/users", nil)
-	req.Header.Set("Authorization", "Bearer admin-secret")
+	req.Header.Set("Authorization", adminAuthHeader(t, app))
 	res = httptest.NewRecorder()
 	app.Handler().ServeHTTP(res, req)
 	if res.Code != http.StatusOK {
@@ -779,45 +1146,51 @@ func TestAdminUsersManageLinuxDoUsers(t *testing.T) {
 		t.Fatalf("local usage stats = %#v", localUser)
 	}
 
-	req = httptest.NewRequest(http.MethodPost, "/api/admin/users", strings.NewReader(`{"name":"created local"}`))
-	req.Header.Set("Authorization", "Bearer admin-secret")
+	req = httptest.NewRequest(http.MethodPost, "/api/admin/users", strings.NewReader(`{"username":"created_local","name":"Created Local","password":"Password123","enabled":true}`))
+	req.Header.Set("Authorization", adminAuthHeader(t, app))
 	res = httptest.NewRecorder()
 	app.Handler().ServeHTTP(res, req)
 	if res.Code != http.StatusOK {
-		t.Fatalf("create managed user status = %d body = %s", res.Code, res.Body.String())
+		t.Fatalf("create password user status = %d body = %s", res.Code, res.Body.String())
 	}
 	var created map[string]any
 	if err := json.Unmarshal(res.Body.Bytes(), &created); err != nil {
-		t.Fatalf("create managed user json: %v", err)
+		t.Fatalf("create password user json: %v", err)
 	}
-	createdKey, _ := created["key"].(string)
 	createdItem, _ := created["item"].(map[string]any)
-	if createdKey == "" || createdItem["name"] != "created local" || createdItem["has_api_key"] != true {
-		t.Fatalf("create managed user body = %#v", created)
+	if createdItem["username"] != "created_local" || createdItem["name"] != "Created Local" || createdItem["has_api_key"] != false || createdItem["has_session"] != false {
+		t.Fatalf("create password user body = %#v", created)
 	}
-	if identity := app.auth.Authenticate(createdKey); identity == nil || identity.Name != "created local" {
-		t.Fatalf("created managed user identity = %#v", identity)
+	if _, ok := created["key"]; ok {
+		t.Fatalf("password user creation should not issue an API key: %#v", created)
 	}
 	createdID, _ := createdItem["id"].(string)
 	createdPath := "/api/admin/users/" + url.PathEscape(createdID)
 
-	req = httptest.NewRequest(http.MethodGet, createdPath+"/key", nil)
-	req.Header.Set("Authorization", "Bearer admin-secret")
+	req = httptest.NewRequest(http.MethodPost, "/auth/login", strings.NewReader(`{"username":"created_local","password":"Password123"}`))
 	res = httptest.NewRecorder()
 	app.Handler().ServeHTTP(res, req)
 	if res.Code != http.StatusOK {
-		t.Fatalf("reveal local managed key status = %d body = %s", res.Code, res.Body.String())
+		t.Fatalf("created password user login status = %d body = %s", res.Code, res.Body.String())
 	}
-	var revealed map[string]any
-	if err := json.Unmarshal(res.Body.Bytes(), &revealed); err != nil {
-		t.Fatalf("reveal local managed key json: %v", err)
+	var createdLogin map[string]any
+	if err := json.Unmarshal(res.Body.Bytes(), &createdLogin); err != nil {
+		t.Fatalf("created password user login json: %v", err)
 	}
-	if revealed["key"] != createdKey {
-		t.Fatalf("revealed local managed key = %#v want %q", revealed["key"], createdKey)
+	if createdLogin["subject_id"] != createdID || createdLogin["name"] != "Created Local" {
+		t.Fatalf("created password user login body = %#v", createdLogin)
+	}
+
+	req = httptest.NewRequest(http.MethodGet, createdPath+"/key", nil)
+	req.Header.Set("Authorization", adminAuthHeader(t, app))
+	res = httptest.NewRecorder()
+	app.Handler().ServeHTTP(res, req)
+	if res.Code != http.StatusNotFound {
+		t.Fatalf("initial password user key reveal status = %d body = %s", res.Code, res.Body.String())
 	}
 
 	req = httptest.NewRequest(http.MethodPost, createdPath+"/reset-key", strings.NewReader(`{"name":"rotated local"}`))
-	req.Header.Set("Authorization", "Bearer admin-secret")
+	req.Header.Set("Authorization", adminAuthHeader(t, app))
 	res = httptest.NewRecorder()
 	app.Handler().ServeHTTP(res, req)
 	if res.Code != http.StatusOK {
@@ -828,11 +1201,8 @@ func TestAdminUsersManageLinuxDoUsers(t *testing.T) {
 		t.Fatalf("reset local managed key json: %v", err)
 	}
 	rotatedLocalKey, _ := reset["key"].(string)
-	if rotatedLocalKey == "" || rotatedLocalKey == createdKey {
+	if rotatedLocalKey == "" {
 		t.Fatalf("reset local managed key body = %#v", reset)
-	}
-	if app.auth.Authenticate(createdKey) != nil {
-		t.Fatal("old created local key still authenticates after reset")
 	}
 	if identity := app.auth.Authenticate(rotatedLocalKey); identity == nil || identity.ID != createdID {
 		t.Fatalf("rotated local managed key identity = %#v", identity)
@@ -840,7 +1210,7 @@ func TestAdminUsersManageLinuxDoUsers(t *testing.T) {
 
 	ownerPath := "/api/admin/users/" + url.PathEscape(owner.ID)
 	req = httptest.NewRequest(http.MethodPost, ownerPath+"/reset-key", strings.NewReader(`{"name":"managed token"}`))
-	req.Header.Set("Authorization", "Bearer admin-secret")
+	req.Header.Set("Authorization", adminAuthHeader(t, app))
 	res = httptest.NewRecorder()
 	app.Handler().ServeHTTP(res, req)
 	if res.Code != http.StatusForbidden {
@@ -848,7 +1218,7 @@ func TestAdminUsersManageLinuxDoUsers(t *testing.T) {
 	}
 
 	req = httptest.NewRequest(http.MethodGet, ownerPath+"/key", nil)
-	req.Header.Set("Authorization", "Bearer admin-secret")
+	req.Header.Set("Authorization", adminAuthHeader(t, app))
 	res = httptest.NewRecorder()
 	app.Handler().ServeHTTP(res, req)
 	if res.Code != http.StatusForbidden {
@@ -856,7 +1226,7 @@ func TestAdminUsersManageLinuxDoUsers(t *testing.T) {
 	}
 
 	req = httptest.NewRequest(http.MethodPost, ownerPath, strings.NewReader(`{"enabled":false}`))
-	req.Header.Set("Authorization", "Bearer admin-secret")
+	req.Header.Set("Authorization", adminAuthHeader(t, app))
 	res = httptest.NewRecorder()
 	app.Handler().ServeHTTP(res, req)
 	if res.Code != http.StatusOK {
@@ -880,7 +1250,7 @@ func TestAdminUsersManageLinuxDoUsers(t *testing.T) {
 	}
 
 	req = httptest.NewRequest(http.MethodPost, ownerPath, strings.NewReader(`{"enabled":true}`))
-	req.Header.Set("Authorization", "Bearer admin-secret")
+	req.Header.Set("Authorization", adminAuthHeader(t, app))
 	res = httptest.NewRecorder()
 	app.Handler().ServeHTTP(res, req)
 	if res.Code != http.StatusOK {
@@ -891,7 +1261,7 @@ func TestAdminUsersManageLinuxDoUsers(t *testing.T) {
 	}
 
 	req = httptest.NewRequest(http.MethodDelete, ownerPath, nil)
-	req.Header.Set("Authorization", "Bearer admin-secret")
+	req.Header.Set("Authorization", adminAuthHeader(t, app))
 	res = httptest.NewRecorder()
 	app.Handler().ServeHTTP(res, req)
 	if res.Code != http.StatusOK {
@@ -986,7 +1356,7 @@ func TestLinuxDoOAuthCallbackCreatesSession(t *testing.T) {
 		t.Fatalf("callback fragment = %#v", fragment)
 	}
 
-	req = httptest.NewRequest(http.MethodPost, "/auth/login", nil)
+	req = httptest.NewRequest(http.MethodGet, "/auth/session", nil)
 	req.Header.Set("Authorization", "Bearer "+sessionKey)
 	res = httptest.NewRecorder()
 	app.Handler().ServeHTTP(res, req)
@@ -1002,7 +1372,7 @@ func TestLinuxDoOAuthCallbackCreatesSession(t *testing.T) {
 	}
 
 	req = httptest.NewRequest(http.MethodGet, "/api/admin/users", nil)
-	req.Header.Set("Authorization", "Bearer admin-secret")
+	req.Header.Set("Authorization", adminAuthHeader(t, app))
 	res = httptest.NewRecorder()
 	app.Handler().ServeHTTP(res, req)
 	if res.Code != http.StatusOK {
@@ -1060,7 +1430,7 @@ func TestModelsCallLogIncludesUserKeyName(t *testing.T) {
 	}
 
 	req = httptest.NewRequest(http.MethodGet, "/api/logs?type=call", nil)
-	req.Header.Set("Authorization", "Bearer admin-secret")
+	req.Header.Set("Authorization", adminAuthHeader(t, app))
 	res = httptest.NewRecorder()
 	app.Handler().ServeHTTP(res, req)
 	if res.Code != http.StatusOK {
@@ -1100,14 +1470,32 @@ func findHTTPItem(items []map[string]any, id string) map[string]any {
 	return nil
 }
 
+const (
+	testAdminUsername = "admin"
+	testAdminPassword = "AdminPass123!"
+)
+
+func adminAuthHeader(t *testing.T, app *App) string {
+	t.Helper()
+	identity, token, err := app.auth.LoginPassword(testAdminUsername, testAdminPassword)
+	if err != nil {
+		t.Fatalf("admin LoginPassword() error = %v", err)
+	}
+	if identity == nil || identity.Role != service.AuthRoleAdmin || token == "" {
+		t.Fatalf("admin LoginPassword() identity=%#v token=%q", identity, token)
+	}
+	return "Bearer " + token
+}
+
 func newTestApp(t *testing.T) *App {
 	t.Helper()
 	root := t.TempDir()
 	t.Setenv("CHATGPT2API_ROOT", root)
-	t.Setenv("CHATGPT2API_AUTH_KEY", "admin-secret")
+	t.Setenv("CHATGPT2API_ADMIN_USERNAME", testAdminUsername)
+	t.Setenv("CHATGPT2API_ADMIN_PASSWORD", testAdminPassword)
+	unsetTestEnv(t, "CHATGPT2API_REGISTRATION_ENABLED")
 	t.Setenv("STORAGE_BACKEND", "json")
 	t.Setenv("DATABASE_URL", "")
-	t.Setenv("GIT_REPO_URL", "")
 	if err := os.MkdirAll(filepath.Join(root, "web_dist", "assets"), 0o755); err != nil {
 		t.Fatalf("mkdir web_dist: %v", err)
 	}
@@ -1122,6 +1510,21 @@ func newTestApp(t *testing.T) *App {
 		return map[string]any{"object": "list", "data": []map[string]any{}}, nil
 	}
 	return app
+}
+
+func unsetTestEnv(t *testing.T, key string) {
+	t.Helper()
+	original, existed := os.LookupEnv(key)
+	if err := os.Unsetenv(key); err != nil {
+		t.Fatalf("Unsetenv(%s): %v", key, err)
+	}
+	t.Cleanup(func() {
+		if existed {
+			_ = os.Setenv(key, original)
+			return
+		}
+		_ = os.Unsetenv(key)
+	})
 }
 
 func writeHTTPTestPNG(path string) error {

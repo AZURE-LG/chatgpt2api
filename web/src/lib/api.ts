@@ -59,6 +59,24 @@ export function isImageQuality(value: unknown): value is ImageQuality {
 export type AuthRole = "admin" | "user";
 export type AnnouncementTarget = "login" | "image";
 
+export type PermissionMenu = {
+  id: string;
+  label: string;
+  path: string;
+  icon?: string;
+  order?: number;
+  children?: PermissionMenu[];
+};
+
+export type ApiPermission = {
+  key: string;
+  method: string;
+  path: string;
+  label: string;
+  group: string;
+  subtree?: boolean;
+};
+
 export type Account = {
   id: string;
   access_token: string;
@@ -107,6 +125,7 @@ type AccountUpdateResponse = {
 export type SettingsConfig = {
   proxy: string;
   base_url?: string;
+  registration_enabled?: boolean;
   refresh_account_interval_minute?: number | string;
   image_concurrent_limit?: number | string;
   user_default_concurrent_limit?: number | string;
@@ -202,16 +221,25 @@ type ImageTaskListResponse = {
 export type LoginResponse = {
   ok: boolean;
   version: string;
+  token?: string;
   role: AuthRole;
+  role_id?: string;
+  role_name?: string;
   subject_id: string;
   name: string;
   provider?: string;
   credential_id?: string;
   credential_name?: string;
+  menu_paths?: string[];
+  api_permissions?: string[];
+  menus?: PermissionMenu[];
 };
 
 export type AuthProviders = {
   linuxdo: {
+    enabled: boolean;
+  };
+  registration?: {
     enabled: boolean;
   };
 };
@@ -230,7 +258,9 @@ export type Announcement = {
 export type UserKey = {
   id: string;
   name: string;
-  role: "user";
+  role: AuthRole;
+  role_id?: string;
+  role_name?: string;
   kind?: "api_key";
   provider?: "local" | "linuxdo" | string;
   owner_id?: string;
@@ -238,12 +268,17 @@ export type UserKey = {
   enabled: boolean;
   created_at: string | null;
   last_used_at: string | null;
+  menu_paths?: string[];
+  api_permissions?: string[];
 };
 
 export type ManagedUser = {
   id: string;
+  username?: string;
   name: string;
   role: "user";
+  role_id?: string;
+  role_name?: string;
   provider: "local" | "linuxdo" | string;
   owner_id?: string;
   owner_name?: string;
@@ -270,6 +305,28 @@ export type ManagedUser = {
     failure: number;
     quota_used: number;
   }>;
+  menu_paths?: string[];
+  api_permissions?: string[];
+};
+
+export type ManagedRole = {
+  id: string;
+  name: string;
+  description?: string;
+  builtin?: boolean;
+  user_count?: number;
+  created_at?: string | null;
+  updated_at?: string | null;
+  menu_paths?: string[];
+  api_permissions?: string[];
+};
+
+export type CreateManagedUserPayload = {
+  username: string;
+  name?: string;
+  password: string;
+  role_id?: string;
+  enabled?: boolean;
 };
 
 export type RegisterConfig = {
@@ -310,13 +367,27 @@ export type RegisterConfig = {
   }>;
 };
 
-export async function login(authKey: string) {
-  const normalizedAuthKey = String(authKey || "").trim();
+export async function login(username: string, password: string) {
   return httpRequest<LoginResponse>("/auth/login", {
     method: "POST",
-    body: {},
+    body: { username, password },
+    redirectOnUnauthorized: false,
+  });
+}
+
+export async function registerAccount(username: string, password: string, name?: string) {
+  return httpRequest<LoginResponse>("/auth/register", {
+    method: "POST",
+    body: { username, password, name: name ?? "" },
+    redirectOnUnauthorized: false,
+  });
+}
+
+export async function verifySession(token: string) {
+  return httpRequest<LoginResponse>("/auth/session", {
+    method: "GET",
     headers: {
-      Authorization: `Bearer ${normalizedAuthKey}`,
+      Authorization: `Bearer ${String(token || "").trim()}`,
     },
     redirectOnUnauthorized: false,
   });
@@ -657,6 +728,55 @@ export async function deleteUserKey(keyId: string) {
   });
 }
 
+function profileAPIKeyPath(keyId: string) {
+  return `/api/profile/api-key/${encodeURIComponent(keyId)}`;
+}
+
+export async function fetchProfileAPIKey() {
+  return httpRequest<{ items: UserKey[] }>("/api/profile/api-key");
+}
+
+export async function upsertProfileAPIKey(name: string) {
+  return httpRequest<{ item: UserKey; key: string; items: UserKey[] }>("/api/profile/api-key", {
+    method: "POST",
+    body: { name },
+  });
+}
+
+export async function revealProfileAPIKey(keyId: string) {
+  return httpRequest<{ key: string }>(`${profileAPIKeyPath(keyId)}/key`);
+}
+
+export async function updateProfileAPIKey(keyId: string, updates: { enabled?: boolean; name?: string }) {
+  return httpRequest<{ item: UserKey; items: UserKey[] }>(profileAPIKeyPath(keyId), {
+    method: "POST",
+    body: updates,
+  });
+}
+
+export async function deleteProfileAPIKey(keyId: string) {
+  return httpRequest<{ items: UserKey[] }>(profileAPIKeyPath(keyId), {
+    method: "DELETE",
+  });
+}
+
+export async function updateProfileName(name: string) {
+  return httpRequest<LoginResponse>("/api/profile", {
+    method: "POST",
+    body: { name },
+  });
+}
+
+export async function changeProfilePassword(currentPassword: string, newPassword: string) {
+  return httpRequest<{ ok: boolean }>("/api/profile/password", {
+    method: "POST",
+    body: {
+      current_password: currentPassword,
+      new_password: newPassword,
+    },
+  });
+}
+
 function managedUserPath(userId: string) {
   return `/api/admin/users/${encodeURIComponent(userId)}`;
 }
@@ -665,14 +785,57 @@ export async function fetchManagedUsers() {
   return httpRequest<{ items: ManagedUser[] }>("/api/admin/users");
 }
 
-export async function createManagedUser(name: string) {
-  return httpRequest<{ item: ManagedUser; api_key: UserKey; key: string; items: ManagedUser[] }>("/api/admin/users", {
+export async function fetchPermissionCatalog() {
+  return httpRequest<{ menus: PermissionMenu[]; apis: ApiPermission[] }>("/api/admin/permissions");
+}
+
+function managedRolePath(roleId: string) {
+  return `/api/admin/roles/${encodeURIComponent(roleId)}`;
+}
+
+export async function fetchManagedRoles() {
+  return httpRequest<{ items: ManagedRole[] }>("/api/admin/roles");
+}
+
+export async function createManagedRole(updates: {
+  name: string;
+  description?: string;
+  menu_paths?: string[];
+  api_permissions?: string[];
+}) {
+  return httpRequest<{ item: ManagedRole; items: ManagedRole[] }>("/api/admin/roles", {
     method: "POST",
-    body: { name },
+    body: updates,
   });
 }
 
-export async function updateManagedUser(userId: string, updates: { enabled?: boolean; name?: string }) {
+export async function updateManagedRole(
+  roleId: string,
+  updates: { name?: string; description?: string; menu_paths?: string[]; api_permissions?: string[] },
+) {
+  return httpRequest<{ item: ManagedRole; items: ManagedRole[] }>(managedRolePath(roleId), {
+    method: "POST",
+    body: updates,
+  });
+}
+
+export async function deleteManagedRole(roleId: string) {
+  return httpRequest<{ items: ManagedRole[] }>(managedRolePath(roleId), {
+    method: "DELETE",
+  });
+}
+
+export async function createManagedUser(payload: CreateManagedUserPayload) {
+  return httpRequest<{ item: ManagedUser; items: ManagedUser[] }>("/api/admin/users", {
+    method: "POST",
+    body: payload,
+  });
+}
+
+export async function updateManagedUser(
+  userId: string,
+  updates: { enabled?: boolean; name?: string; role_id?: string },
+) {
   return httpRequest<{ item: ManagedUser; items: ManagedUser[] }>(managedUserPath(userId), {
     method: "POST",
     body: updates,
