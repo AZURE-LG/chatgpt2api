@@ -398,6 +398,69 @@ func TestImageManagementIsScopedByOwner(t *testing.T) {
 	if len(items) != 1 || items[0]["path"] != aliceRel {
 		t.Fatalf("linuxdo scoped images = %#v", list)
 	}
+	if items[0]["owner_name"] != owner.Name || items[0]["visibility"] != service.ImageVisibilityPrivate {
+		t.Fatalf("linuxdo image metadata = %#v", items[0])
+	}
+
+	req = httptest.NewRequest(http.MethodPatch, "/api/images/visibility", strings.NewReader(`{"path":"`+aliceRel+`","visibility":"public"}`))
+	req.Header.Set("Authorization", "Bearer "+sessionKey)
+	res = httptest.NewRecorder()
+	app.Handler().ServeHTTP(res, req)
+	if res.Code != http.StatusOK {
+		t.Fatalf("linuxdo publish image status = %d body = %s", res.Code, res.Body.String())
+	}
+	var visibilityBody map[string]any
+	if err := json.Unmarshal(res.Body.Bytes(), &visibilityBody); err != nil {
+		t.Fatalf("visibility json: %v", err)
+	}
+	updatedItem, _ := visibilityBody["item"].(map[string]any)
+	if updatedItem["visibility"] != service.ImageVisibilityPublic || updatedItem["owner_name"] != owner.Name {
+		t.Fatalf("publish image response = %#v", visibilityBody)
+	}
+
+	req = httptest.NewRequest(http.MethodPatch, "/api/images/visibility", strings.NewReader(`{"path":"`+bobRel+`","visibility":"public"}`))
+	req.Header.Set("Authorization", "Bearer "+sessionKey)
+	res = httptest.NewRecorder()
+	app.Handler().ServeHTTP(res, req)
+	if res.Code != http.StatusNotFound {
+		t.Fatalf("linuxdo publish other image status = %d body = %s", res.Code, res.Body.String())
+	}
+
+	req = httptest.NewRequest(http.MethodGet, "/api/images?scope=public", nil)
+	req.Header.Set("Authorization", "Bearer "+sessionKey)
+	res = httptest.NewRecorder()
+	app.Handler().ServeHTTP(res, req)
+	if res.Code != http.StatusOK {
+		t.Fatalf("public images status = %d body = %s", res.Code, res.Body.String())
+	}
+	if err := json.Unmarshal(res.Body.Bytes(), &list); err != nil {
+		t.Fatalf("public images json: %v", err)
+	}
+	if items := logItems(list); len(items) != 1 || items[0]["path"] != aliceRel || items[0]["owner_name"] != owner.Name {
+		t.Fatalf("public scoped images = %#v", list)
+	}
+
+	req = httptest.NewRequest(http.MethodPatch, "/api/images/visibility", strings.NewReader(`{"path":"`+aliceRel+`","visibility":"private"}`))
+	req.Header.Set("Authorization", "Bearer "+sessionKey)
+	res = httptest.NewRecorder()
+	app.Handler().ServeHTTP(res, req)
+	if res.Code != http.StatusOK {
+		t.Fatalf("linuxdo unpublish image status = %d body = %s", res.Code, res.Body.String())
+	}
+
+	req = httptest.NewRequest(http.MethodGet, "/api/images?scope=public", nil)
+	req.Header.Set("Authorization", "Bearer "+sessionKey)
+	res = httptest.NewRecorder()
+	app.Handler().ServeHTTP(res, req)
+	if res.Code != http.StatusOK {
+		t.Fatalf("public images after unpublish status = %d body = %s", res.Code, res.Body.String())
+	}
+	if err := json.Unmarshal(res.Body.Bytes(), &list); err != nil {
+		t.Fatalf("public images after unpublish json: %v", err)
+	}
+	if items := logItems(list); len(items) != 0 {
+		t.Fatalf("unpublished image should leave public gallery: %#v", list)
+	}
 
 	req = httptest.NewRequest(http.MethodDelete, "/api/images", strings.NewReader(`{"paths":["`+bobRel+`","`+aliceRel+`"]}`))
 	req.Header.Set("Authorization", "Bearer "+sessionKey)
@@ -413,6 +476,18 @@ func TestImageManagementIsScopedByOwner(t *testing.T) {
 		t.Fatalf("bob image should not be deleted, stat error = %v", err)
 	}
 
+	_, localKey, err := app.auth.CreateAPIKey(service.AuthRoleUser, "local user", service.AuthOwner{})
+	if err != nil {
+		t.Fatalf("CreateAPIKey(local) error = %v", err)
+	}
+	req = httptest.NewRequest(http.MethodDelete, "/api/images", strings.NewReader(`{"paths":["`+aliceRel+`"]}`))
+	req.Header.Set("Authorization", "Bearer "+localKey)
+	res = httptest.NewRecorder()
+	app.Handler().ServeHTTP(res, req)
+	if res.Code != http.StatusForbidden {
+		t.Fatalf("local user delete images status = %d body = %s", res.Code, res.Body.String())
+	}
+
 	req = httptest.NewRequest(http.MethodGet, "/api/images", nil)
 	req.Header.Set("Authorization", "Bearer admin-secret")
 	res = httptest.NewRecorder()
@@ -425,6 +500,24 @@ func TestImageManagementIsScopedByOwner(t *testing.T) {
 	}
 	if items := logItems(list); len(items) != 3 {
 		t.Fatalf("admin should see owned and legacy images, got %#v", list)
+	}
+
+	req = httptest.NewRequest(http.MethodDelete, "/api/images", strings.NewReader(`{"paths":["`+aliceRel+`"]}`))
+	req.Header.Set("Authorization", "Bearer admin-secret")
+	res = httptest.NewRecorder()
+	app.Handler().ServeHTTP(res, req)
+	if res.Code != http.StatusOK {
+		t.Fatalf("admin delete images status = %d body = %s", res.Code, res.Body.String())
+	}
+	var deleteBody map[string]any
+	if err := json.Unmarshal(res.Body.Bytes(), &deleteBody); err != nil {
+		t.Fatalf("admin delete images json: %v", err)
+	}
+	if deleteBody["deleted"] != float64(1) || deleteBody["missing"] != float64(0) {
+		t.Fatalf("admin delete images body = %#v", deleteBody)
+	}
+	if _, err := os.Stat(filepath.Join(app.config.ImagesDir(), filepath.FromSlash(aliceRel))); !os.IsNotExist(err) {
+		t.Fatalf("alice image should be deleted by admin, stat error = %v", err)
 	}
 }
 

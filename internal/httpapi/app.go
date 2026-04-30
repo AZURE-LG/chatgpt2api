@@ -160,6 +160,8 @@ func (a *App) serveHTTP(w http.ResponseWriter, r *http.Request) {
 		a.handleLoginPageImageSettings(w, r)
 	case path == "/api/app-meta" && r.Method == http.MethodGet:
 		a.handleAppMeta(w, r)
+	case path == "/api/images/visibility":
+		a.handleImageVisibility(w, r)
 	case path == "/api/images":
 		a.handleImages(w, r)
 	case path == "/api/logs" && r.Method == http.MethodGet:
@@ -191,7 +193,7 @@ func (a *App) handleModels(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	result, err := a.engine.ListModels(r.Context())
-	a.writeProtocol(w, r, result, nil, err, "openai", "/v1/models", "models", identity, "模型列表")
+	a.writeProtocol(w, r, result, nil, err, "openai", "/v1/models", "models", identity, "模型列表", service.ImageVisibilityPrivate)
 }
 
 func (a *App) handleImageGenerations(w http.ResponseWriter, r *http.Request) {
@@ -206,9 +208,14 @@ func (a *App) handleImageGenerations(w http.ResponseWriter, r *http.Request) {
 	}
 	body["owner_id"] = identityScope(identity)
 	body["base_url"] = a.resolveImageBaseURL(r)
+	visibility, err := service.NormalizeImageVisibility(util.Clean(body["visibility"]))
+	if err != nil {
+		util.WriteError(w, http.StatusBadRequest, err.Error())
+		return
+	}
 	model := firstNonEmpty(util.Clean(body["model"]), util.ImageModelAuto)
 	result, stream, err := a.engine.HandleImageGenerations(r.Context(), body)
-	a.writeProtocol(w, r, result, stream, err, "openai", "/v1/images/generations", model, identity, "文生图")
+	a.writeProtocol(w, r, result, stream, err, "openai", "/v1/images/generations", model, identity, "文生图", visibility)
 }
 
 func (a *App) handleImageEdits(w http.ResponseWriter, r *http.Request) {
@@ -231,9 +238,14 @@ func (a *App) handleImageEdits(w http.ResponseWriter, r *http.Request) {
 	}
 	body["owner_id"] = identityScope(identity)
 	body["base_url"] = a.resolveImageBaseURL(r)
+	visibility, err := service.NormalizeImageVisibility(util.Clean(body["visibility"]))
+	if err != nil {
+		util.WriteError(w, http.StatusBadRequest, err.Error())
+		return
+	}
 	model := firstNonEmpty(util.Clean(body["model"]), util.ImageModelAuto)
 	result, stream, err := a.engine.HandleImageEdits(r.Context(), body, images)
-	a.writeProtocol(w, r, result, stream, err, "openai", "/v1/images/edits", model, identity, "图生图")
+	a.writeProtocol(w, r, result, stream, err, "openai", "/v1/images/edits", model, identity, "图生图", visibility)
 }
 
 func (a *App) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
@@ -249,7 +261,7 @@ func (a *App) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 	body["owner_id"] = identityScope(identity)
 	model := firstNonEmpty(util.Clean(body["model"]), "auto")
 	result, stream, err := a.engine.HandleChatCompletions(r.Context(), body)
-	a.writeProtocol(w, r, result, stream, err, "openai", "/v1/chat/completions", model, identity, "文本生成")
+	a.writeProtocol(w, r, result, stream, err, "openai", "/v1/chat/completions", model, identity, "文本生成", service.ImageVisibilityPrivate)
 }
 
 func (a *App) handleResponses(w http.ResponseWriter, r *http.Request) {
@@ -265,7 +277,7 @@ func (a *App) handleResponses(w http.ResponseWriter, r *http.Request) {
 	body["owner_id"] = identityScope(identity)
 	model := firstNonEmpty(util.Clean(body["model"]), "auto")
 	result, stream, err := a.engine.HandleResponsesScoped(r.Context(), body, identityScope(identity))
-	a.writeProtocol(w, r, result, stream, err, "openai", "/v1/responses", model, identity, "Responses")
+	a.writeProtocol(w, r, result, stream, err, "openai", "/v1/responses", model, identity, "Responses", service.ImageVisibilityPrivate)
 }
 
 func (a *App) handleMessages(w http.ResponseWriter, r *http.Request) {
@@ -284,10 +296,10 @@ func (a *App) handleMessages(w http.ResponseWriter, r *http.Request) {
 	}
 	model := firstNonEmpty(util.Clean(body["model"]), "auto")
 	result, stream, err := a.engine.HandleMessages(r.Context(), body)
-	a.writeProtocol(w, r, result, stream, err, "anthropic", "/v1/messages", model, identity, "Messages")
+	a.writeProtocol(w, r, result, stream, err, "anthropic", "/v1/messages", model, identity, "Messages", service.ImageVisibilityPrivate)
 }
 
-func (a *App) writeProtocol(w http.ResponseWriter, r *http.Request, result map[string]any, stream *protocol.StreamResult, err error, sseKind, endpoint, model string, identity service.Identity, summary string) {
+func (a *App) writeProtocol(w http.ResponseWriter, r *http.Request, result map[string]any, stream *protocol.StreamResult, err error, sseKind, endpoint, model string, identity service.Identity, summary, visibility string) {
 	start := time.Now()
 	if err != nil {
 		a.logCall(identity, summary, endpoint, model, start, "failed", err.Error(), nil)
@@ -296,7 +308,7 @@ func (a *App) writeProtocol(w http.ResponseWriter, r *http.Request, result map[s
 	}
 	if stream == nil {
 		urls := collectURLs(result)
-		a.recordImageOwners(identity, urls)
+		a.recordGeneratedImages(identity, urls, visibility)
 		a.logCall(identity, summary, endpoint, model, start, "success", "", urls)
 		util.WriteJSON(w, http.StatusOK, result)
 		return
@@ -316,13 +328,13 @@ func (a *App) writeProtocol(w http.ResponseWriter, r *http.Request, result map[s
 			}
 		}
 		if err := <-stream.Err; err != nil {
-			a.recordImageOwners(identity, urls)
+			a.recordGeneratedImages(identity, urls, visibility)
 			a.logCall(identity, summary, endpoint, model, start, "failed", err.Error(), urls)
 			fmt.Fprintf(w, "event: error\n")
 			fmt.Fprintf(w, "data: %s\n\n", jsonString(map[string]any{"type": "error", "error": map[string]any{"type": fmt.Sprintf("%T", err), "message": err.Error()}}))
 			return
 		}
-		a.recordImageOwners(identity, urls)
+		a.recordGeneratedImages(identity, urls, visibility)
 		a.logCall(identity, summary, endpoint, model, start, "success", "", urls)
 		return
 	}
@@ -339,11 +351,11 @@ func (a *App) writeProtocol(w http.ResponseWriter, r *http.Request, result map[s
 		}
 	}
 	if err := <-stream.Err; err != nil {
-		a.recordImageOwners(identity, urls)
+		a.recordGeneratedImages(identity, urls, visibility)
 		a.logCall(identity, summary, endpoint, model, start, "failed", err.Error(), urls)
 		fmt.Fprintf(w, "data: %s\n\n", jsonString(openAIErrorForStream(err)))
 	} else {
-		a.recordImageOwners(identity, urls)
+		a.recordGeneratedImages(identity, urls, visibility)
 		a.logCall(identity, summary, endpoint, model, start, "success", "", urls)
 	}
 	fmt.Fprint(w, "data: [DONE]\n\n")
@@ -593,13 +605,19 @@ func (a *App) handleImages(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	scope := imageAccessScope(identity)
 	switch r.Method {
 	case http.MethodGet:
-		util.WriteJSON(w, http.StatusOK, a.images.ListImages(a.resolveImageBaseURL(r), strings.TrimSpace(r.URL.Query().Get("start_date")), strings.TrimSpace(r.URL.Query().Get("end_date")), scope))
+		scope, status, message := imageListAccessScope(identity, r.URL.Query().Get("scope"))
+		if status != 0 {
+			util.WriteError(w, status, message)
+			return
+		}
+		payload := a.images.ListImages(a.resolveImageBaseURL(r), strings.TrimSpace(r.URL.Query().Get("start_date")), strings.TrimSpace(r.URL.Query().Get("end_date")), scope)
+		a.decorateImageList(payload)
+		util.WriteJSON(w, http.StatusOK, payload)
 	case http.MethodDelete:
-		if identity.Role == service.AuthRoleUser && identity.Provider == service.AuthProviderLinuxDo {
-			util.WriteError(w, http.StatusForbidden, "Linuxdo users cannot delete images")
+		if identity.Role != service.AuthRoleAdmin {
+			util.WriteError(w, http.StatusForbidden, "admin permission required")
 			return
 		}
 		body, err := readJSONMap(r)
@@ -607,7 +625,7 @@ func (a *App) handleImages(w http.ResponseWriter, r *http.Request) {
 			util.WriteError(w, http.StatusBadRequest, "invalid json body")
 			return
 		}
-		result, err := a.images.DeleteImages(util.AsStringSlice(body["paths"]), scope)
+		result, err := a.images.DeleteImages(util.AsStringSlice(body["paths"]), service.ImageAccessScope{All: true})
 		if err != nil {
 			util.WriteError(w, http.StatusBadRequest, err.Error())
 			return
@@ -616,6 +634,43 @@ func (a *App) handleImages(w http.ResponseWriter, r *http.Request) {
 	default:
 		w.WriteHeader(http.StatusMethodNotAllowed)
 	}
+}
+
+func (a *App) handleImageVisibility(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPatch {
+		w.WriteHeader(http.StatusMethodNotAllowed)
+		return
+	}
+	identity, ok := a.requireIdentity(w, r, "")
+	if !ok {
+		return
+	}
+	body, err := readJSONMap(r)
+	if err != nil {
+		util.WriteError(w, http.StatusBadRequest, "invalid json body")
+		return
+	}
+	path := util.Clean(body["path"])
+	if path == "" {
+		util.WriteError(w, http.StatusBadRequest, "path is required")
+		return
+	}
+	visibility := util.Clean(body["visibility"])
+	scope := service.ImageAccessScope{OwnerID: identityScope(identity)}
+	if identity.Role == service.AuthRoleAdmin {
+		scope = service.ImageAccessScope{All: true}
+	}
+	item, err := a.images.UpdateImageVisibility(path, visibility, scope)
+	if err != nil {
+		status := http.StatusBadRequest
+		if err.Error() == "image not found" {
+			status = http.StatusNotFound
+		}
+		util.WriteError(w, status, err.Error())
+		return
+	}
+	a.decorateImageItem(item, a.imageOwnerDisplayNames())
+	util.WriteJSON(w, http.StatusOK, map[string]any{"item": item})
 }
 
 func (a *App) handleImageThumbnail(w http.ResponseWriter, r *http.Request) {
@@ -789,6 +844,8 @@ func readMultipartImageBody(r *http.Request) (map[string]any, []protocol.Uploade
 		"model":           firstNonEmpty(firstForm(r.MultipartForm, "model"), util.ImageModelAuto),
 		"n":               util.ToInt(firstForm(r.MultipartForm, "n"), 1),
 		"size":            firstForm(r.MultipartForm, "size"),
+		"quality":         firstForm(r.MultipartForm, "quality"),
+		"visibility":      firstForm(r.MultipartForm, "visibility"),
 		"response_format": firstNonEmpty(firstForm(r.MultipartForm, "response_format"), "b64_json"),
 		"stream":          util.ToBool(firstForm(r.MultipartForm, "stream")),
 	}
@@ -900,6 +957,10 @@ func identityScope(identity service.Identity) string {
 	return "anonymous"
 }
 
+func identityDisplayName(identity service.Identity) string {
+	return firstNonEmpty(util.Clean(identity.Name), util.Clean(identity.CredentialName))
+}
+
 func imageAccessScope(identity service.Identity) service.ImageAccessScope {
 	if identity.Role == service.AuthRoleAdmin {
 		return service.ImageAccessScope{All: true}
@@ -907,12 +968,70 @@ func imageAccessScope(identity service.Identity) service.ImageAccessScope {
 	return service.ImageAccessScope{OwnerID: identityScope(identity)}
 }
 
-func (a *App) recordImageOwners(identity service.Identity, urls []string) {
+func imageListAccessScope(identity service.Identity, value string) (service.ImageAccessScope, int, string) {
+	switch strings.TrimSpace(value) {
+	case "":
+		return imageAccessScope(identity), 0, ""
+	case "mine":
+		return service.ImageAccessScope{OwnerID: identityScope(identity)}, 0, ""
+	case "public":
+		return service.ImageAccessScope{Public: true}, 0, ""
+	case "all":
+		if identity.Role != service.AuthRoleAdmin {
+			return service.ImageAccessScope{}, http.StatusForbidden, "admin permission required"
+		}
+		return service.ImageAccessScope{All: true}, 0, ""
+	default:
+		return service.ImageAccessScope{}, http.StatusBadRequest, "scope must be mine, public, or all"
+	}
+}
+
+func (a *App) recordGeneratedImages(identity service.Identity, urls []string, visibility string) {
 	if len(urls) == 0 || a.images == nil {
 		return
 	}
 	ownerID := identityScope(identity)
-	a.images.RecordGeneratedImages(urls, ownerID)
+	a.images.RecordGeneratedImages(urls, ownerID, identityDisplayName(identity), visibility)
+}
+
+func (a *App) decorateImageList(payload map[string]any) {
+	ownerNames := a.imageOwnerDisplayNames()
+	for _, item := range util.AsMapSlice(payload["items"]) {
+		a.decorateImageItem(item, ownerNames)
+	}
+}
+
+func (a *App) decorateImageItem(item map[string]any, ownerNames map[string]string) {
+	if item == nil || util.Clean(item["owner_name"]) != "" {
+		return
+	}
+	ownerID := util.Clean(item["owner_id"])
+	if ownerID == "" {
+		item["owner_name"] = "未知用户"
+		return
+	}
+	if name := ownerNames[ownerID]; name != "" {
+		item["owner_name"] = name
+		return
+	}
+	item["owner_name"] = "未知用户"
+}
+
+func (a *App) imageOwnerDisplayNames() map[string]string {
+	names := map[string]string{"admin": "管理员"}
+	for _, item := range a.auth.ListUsers() {
+		name := util.Clean(item["name"])
+		if name == "" {
+			continue
+		}
+		if id := util.Clean(item["id"]); id != "" {
+			names[id] = name
+		}
+		if ownerID := util.Clean(item["owner_id"]); ownerID != "" {
+			names[ownerID] = name
+		}
+	}
+	return names
 }
 
 func (a *App) runLoggedImageTask(ctx context.Context, identity service.Identity, payload map[string]any, endpoint, summary string, run func(context.Context, map[string]any) (map[string]any, error)) (map[string]any, error) {
@@ -921,7 +1040,7 @@ func (a *App) runLoggedImageTask(ctx context.Context, identity service.Identity,
 	model := firstNonEmpty(util.Clean(payload["model"]), util.ImageModelAuto)
 	result, err := run(ctx, payload)
 	urls := collectURLs(result)
-	a.recordImageOwners(identity, urls)
+	a.recordGeneratedImages(identity, urls, util.Clean(payload["visibility"]))
 	if err != nil {
 		a.logCall(identity, summary, endpoint, model, start, "failed", err.Error(), urls)
 		return result, err

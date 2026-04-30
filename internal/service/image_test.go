@@ -371,6 +371,46 @@ func TestImageServiceScopesImagesByOwner(t *testing.T) {
 	}
 }
 
+func TestImageServicePublicVisibility(t *testing.T) {
+	root := t.TempDir()
+	config := testImageConfig{root: root}
+	aliceRel := "2026/04/29/alice.png"
+	bobRel := "2026/04/29/bob.png"
+	for _, rel := range []string{aliceRel, bobRel} {
+		path := filepath.Join(config.ImagesDir(), filepath.FromSlash(rel))
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			t.Fatalf("MkdirAll() error = %v", err)
+		}
+		if err := writeTestPNG(path); err != nil {
+			t.Fatalf("writeTestPNG(%s) error = %v", path, err)
+		}
+	}
+
+	service := NewImageService(config)
+	service.RecordGeneratedImages([]string{aliceRel}, "linuxdo:123", "alice", ImageVisibilityPublic)
+	service.RecordGeneratedImages([]string{bobRel}, "linuxdo:456", "bob", ImageVisibilityPrivate)
+
+	public := service.ListImages("http://127.0.0.1:8000", "", "", ImageAccessScope{Public: true})
+	publicItems := public["items"].([]map[string]any)
+	if len(publicItems) != 1 || publicItems[0]["path"] != aliceRel {
+		t.Fatalf("public ListImages() = %#v", public)
+	}
+	if publicItems[0]["visibility"] != ImageVisibilityPublic || publicItems[0]["owner_name"] != "alice" || publicItems[0]["published_at"] == "" {
+		t.Fatalf("public metadata = %#v", publicItems[0])
+	}
+
+	if _, err := service.UpdateImageVisibility(aliceRel, ImageVisibilityPrivate, ImageAccessScope{OwnerID: "linuxdo:456"}); err == nil {
+		t.Fatal("UpdateImageVisibility(other owner) error = nil")
+	}
+	if _, err := service.UpdateImageVisibility(aliceRel, ImageVisibilityPrivate, ImageAccessScope{OwnerID: "linuxdo:123"}); err != nil {
+		t.Fatalf("UpdateImageVisibility(owner private) error = %v", err)
+	}
+	public = service.ListImages("http://127.0.0.1:8000", "", "", ImageAccessScope{Public: true})
+	if items := public["items"].([]map[string]any); len(items) != 0 {
+		t.Fatalf("private image should leave public gallery: %#v", public)
+	}
+}
+
 func TestImageServiceDeleteImagesRejectsTraversal(t *testing.T) {
 	root := t.TempDir()
 	outsidePath := filepath.Join(root, "outside.png")

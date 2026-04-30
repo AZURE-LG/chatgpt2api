@@ -27,6 +27,9 @@ const (
 	ThumbnailSize         = 720
 	thumbnailCacheVersion = 2
 	thumbnailExtension    = ".webp"
+
+	ImageVisibilityPrivate = "private"
+	ImageVisibilityPublic  = "public"
 )
 
 type ImageConfig interface {
@@ -39,6 +42,14 @@ type ImageConfig interface {
 type ImageAccessScope struct {
 	OwnerID string
 	All     bool
+	Public  bool
+}
+
+type imageMetadata struct {
+	OwnerID     string
+	OwnerName   string
+	Visibility  string
+	PublishedAt string
 }
 
 type ImageService struct {
@@ -91,8 +102,13 @@ func (s *ImageService) ListImages(baseURL, startDate, endDate string, scope Imag
 		if endDate != "" && day > endDate {
 			return nil
 		}
-		ownerID := s.imageOwner(rel)
-		if !scope.All && (scope.OwnerID == "" || ownerID != scope.OwnerID) {
+		meta := s.imageMetadata(rel)
+		ownerID := meta.OwnerID
+		if scope.Public {
+			if meta.Visibility != ImageVisibilityPublic {
+				return nil
+			}
+		} else if !scope.All && (scope.OwnerID == "" || ownerID != scope.OwnerID) {
 			return nil
 		}
 		thumb := s.thumbnailInfo(rel, info)
@@ -103,9 +119,16 @@ func (s *ImageService) ListImages(baseURL, startDate, endDate string, scope Imag
 			"size":       info.Size(),
 			"url":        publicAssetURL(baseURL, "images", rel),
 			"created_at": info.ModTime().Format("2006-01-02 15:04:05"),
+			"visibility": meta.Visibility,
 		}
 		if ownerID != "" {
 			item["owner_id"] = ownerID
+		}
+		if meta.OwnerName != "" {
+			item["owner_name"] = meta.OwnerName
+		}
+		if meta.PublishedAt != "" {
+			item["published_at"] = meta.PublishedAt
 		}
 		if thumbRel, ok := thumb["thumbnail_rel"].(string); ok && thumbRel != "" {
 			item["thumbnail_url"] = publicAssetURL(baseURL, "image-thumbnails", thumbRel)
@@ -118,7 +141,13 @@ func (s *ImageService) ListImages(baseURL, startDate, endDate string, scope Imag
 		return nil
 	})
 	sort.Slice(items, func(i, j int) bool {
-		return strings.Compare(toString(items[i]["created_at"]), toString(items[j]["created_at"])) > 0
+		left := toString(items[i]["created_at"])
+		right := toString(items[j]["created_at"])
+		if scope.Public {
+			left = firstNonEmptyString(toString(items[i]["published_at"]), left)
+			right = firstNonEmptyString(toString(items[j]["published_at"]), right)
+		}
+		return strings.Compare(left, right) > 0
 	})
 	groupMap := map[string][]map[string]any{}
 	var order []string
@@ -134,6 +163,54 @@ func (s *ImageService) ListImages(baseURL, startDate, endDate string, scope Imag
 		groups = append(groups, map[string]any{"date": day, "items": groupMap[day]})
 	}
 	return map[string]any{"items": items, "groups": groups}
+}
+
+func (s *ImageService) UpdateImageVisibility(value, visibility string, scope ImageAccessScope) (map[string]any, error) {
+	visibility, err := NormalizeImageVisibility(visibility)
+	if err != nil {
+		return nil, err
+	}
+	rel, err := cleanImageRelativePath(value)
+	if err != nil {
+		return nil, err
+	}
+	imageRoot, err := filepath.Abs(s.config.ImagesDir())
+	if err != nil {
+		return nil, err
+	}
+	ref, err := s.imageFileRef(imageRoot, rel)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil, errors.New("image not found")
+		}
+		return nil, err
+	}
+	meta := s.imageMetadata(ref.rel)
+	if !scope.All && (scope.OwnerID == "" || meta.OwnerID != scope.OwnerID) {
+		return nil, errors.New("image not found")
+	}
+	if err := s.writeImageMetadataForRef(ref, "", "", visibility); err != nil {
+		return nil, err
+	}
+	nextMeta := s.imageMetadata(ref.rel)
+	item := map[string]any{
+		"name":       filepath.Base(ref.path),
+		"path":       ref.rel,
+		"date":       imageDay(ref.rel, ref.info.ModTime()),
+		"size":       ref.info.Size(),
+		"visibility": nextMeta.Visibility,
+		"created_at": ref.info.ModTime().Format("2006-01-02 15:04:05"),
+	}
+	if nextMeta.OwnerID != "" {
+		item["owner_id"] = nextMeta.OwnerID
+	}
+	if nextMeta.OwnerName != "" {
+		item["owner_name"] = nextMeta.OwnerName
+	}
+	if nextMeta.PublishedAt != "" {
+		item["published_at"] = nextMeta.PublishedAt
+	}
+	return item, nil
 }
 
 func (s *ImageService) DeleteImages(paths []string, scope ImageAccessScope) (map[string]any, error) {
@@ -206,16 +283,21 @@ func (s *ImageService) RecordImageOwners(values []string, ownerID string) {
 		return
 	}
 	for _, ref := range s.imageFileRefs(values) {
-		_ = s.writeImageOwner(ref.rel, ownerID)
+		_ = s.writeImageMetadataForRef(ref, ownerID, "", "")
 	}
 }
 
-func (s *ImageService) RecordGeneratedImages(values []string, ownerID string) {
+func (s *ImageService) RecordGeneratedImages(values []string, ownerID, ownerName, visibility string) {
 	ownerID = strings.TrimSpace(ownerID)
+	ownerName = strings.TrimSpace(ownerName)
+	visibility, err := NormalizeImageVisibility(visibility)
+	if err != nil {
+		visibility = ImageVisibilityPrivate
+	}
 	for _, ref := range s.imageFileRefs(values) {
 		s.ensureThumbnailForRef(ref)
 		if ownerID != "" && ownerID != "anonymous" {
-			_ = s.writeImageOwner(ref.rel, ownerID)
+			_ = s.writeImageMetadataForRef(ref, ownerID, ownerName, visibility)
 		}
 	}
 }
@@ -389,37 +471,93 @@ func (s *ImageService) thumbnailPath(rel string) string {
 }
 
 func (s *ImageService) imageOwner(rel string) string {
+	return s.imageMetadata(rel).OwnerID
+}
+
+func (s *ImageService) imageMetadata(rel string) imageMetadata {
 	metaPath, err := s.imageOwnerMetadataPath(rel)
 	if err != nil {
-		return ""
+		return imageMetadata{Visibility: ImageVisibilityPrivate}
 	}
+	var raw map[string]any
 	if s.store != nil {
-		raw, err := s.store.LoadJSONDocument(imageOwnerDocumentName(rel))
+		value, err := s.store.LoadJSONDocument(imageOwnerDocumentName(rel))
 		if err == nil {
-			if meta, ok := raw.(map[string]any); ok {
-				return strings.TrimSpace(toString(meta["owner_id"]))
+			if meta, ok := value.(map[string]any); ok {
+				raw = meta
 			}
 		}
 	}
-	data, err := os.ReadFile(metaPath)
-	if err != nil {
-		return ""
+	if raw == nil {
+		data, err := os.ReadFile(metaPath)
+		if err != nil {
+			return imageMetadata{Visibility: ImageVisibilityPrivate}
+		}
+		if json.Unmarshal(data, &raw) != nil {
+			return imageMetadata{Visibility: ImageVisibilityPrivate}
+		}
 	}
-	var meta map[string]any
-	if json.Unmarshal(data, &meta) != nil {
-		return ""
-	}
-	return strings.TrimSpace(toString(meta["owner_id"]))
+	return normalizeImageMetadata(raw)
 }
 
-func (s *ImageService) writeImageOwner(rel, ownerID string) error {
+func normalizeImageMetadata(raw map[string]any) imageMetadata {
+	visibility := strings.TrimSpace(toString(raw["visibility"]))
+	if visibility != ImageVisibilityPublic {
+		visibility = ImageVisibilityPrivate
+	}
+	return imageMetadata{
+		OwnerID:     strings.TrimSpace(toString(raw["owner_id"])),
+		OwnerName:   strings.TrimSpace(toString(raw["owner_name"])),
+		Visibility:  visibility,
+		PublishedAt: strings.TrimSpace(toString(raw["published_at"])),
+	}
+}
+
+func (s *ImageService) writeImageMetadataForRef(ref imageFileRef, ownerID, ownerName, visibility string) error {
+	meta := s.imageMetadata(ref.rel)
+	if ownerID = strings.TrimSpace(ownerID); ownerID != "" {
+		meta.OwnerID = ownerID
+	}
+	if ownerName = strings.TrimSpace(ownerName); ownerName != "" {
+		meta.OwnerName = ownerName
+	}
+	if visibility = strings.TrimSpace(visibility); visibility != "" {
+		normalized, err := NormalizeImageVisibility(visibility)
+		if err != nil {
+			return err
+		}
+		if normalized == ImageVisibilityPublic {
+			if meta.PublishedAt == "" || meta.Visibility != ImageVisibilityPublic {
+				meta.PublishedAt = time.Now().UTC().Format(time.RFC3339Nano)
+			}
+		} else {
+			meta.PublishedAt = ""
+		}
+		meta.Visibility = normalized
+	}
+	if meta.Visibility == "" {
+		meta.Visibility = ImageVisibilityPrivate
+	}
+	return s.writeImageMetadata(ref.rel, meta)
+}
+
+func (s *ImageService) writeImageMetadata(rel string, meta imageMetadata) error {
 	metaPath, err := s.imageOwnerMetadataPath(rel)
 	if err != nil {
 		return err
 	}
 	value := map[string]any{
-		"owner_id":   ownerID,
+		"visibility": meta.Visibility,
 		"updated_at": time.Now().UTC().Format(time.RFC3339Nano),
+	}
+	if meta.OwnerID != "" {
+		value["owner_id"] = meta.OwnerID
+	}
+	if meta.OwnerName != "" {
+		value["owner_name"] = meta.OwnerName
+	}
+	if meta.PublishedAt != "" {
+		value["published_at"] = meta.PublishedAt
 	}
 	if s.store != nil {
 		return s.store.SaveJSONDocument(imageOwnerDocumentName(rel), value)
@@ -492,6 +630,25 @@ func (s *ImageService) removeImageThumbnail(root, rel string) error {
 
 func imageOwnerDocumentName(rel string) string {
 	return "image_metadata/" + filepath.ToSlash(rel) + ".json"
+}
+
+func NormalizeImageVisibility(value string) (string, error) {
+	switch strings.TrimSpace(value) {
+	case "", ImageVisibilityPrivate:
+		return ImageVisibilityPrivate, nil
+	case ImageVisibilityPublic:
+		return ImageVisibilityPublic, nil
+	default:
+		return "", errors.New("visibility must be private or public")
+	}
+}
+
+func imageDay(rel string, modTime time.Time) string {
+	parts := strings.Split(rel, "/")
+	if len(parts) >= 4 {
+		return strings.Join(parts[:3], "-")
+	}
+	return modTime.Format("2006-01-02")
 }
 
 func thumbnailMetadataDocumentName(rel string) string {
@@ -775,6 +932,15 @@ func writeJSONFile(path string, value any) error {
 func toString(v any) string {
 	if s, ok := v.(string); ok {
 		return s
+	}
+	return ""
+}
+
+func firstNonEmptyString(values ...string) string {
+	for _, value := range values {
+		if strings.TrimSpace(value) != "" {
+			return value
+		}
 	}
 	return ""
 }

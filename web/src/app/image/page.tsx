@@ -49,6 +49,7 @@ import {
   type ImageQuality,
   type ImageTask,
   type ImageTaskMessage,
+  type ImageVisibility,
 } from "@/lib/api";
 import { cn } from "@/lib/utils";
 import { useAuthGuard } from "@/lib/use-auth-guard";
@@ -88,6 +89,7 @@ type EditingTurnDraft = {
   count: string;
   size: string;
   quality: ImageQuality;
+  visibility: ImageVisibility;
   referenceImages: StoredReferenceImage[];
 };
 
@@ -697,6 +699,7 @@ function ImagePageContent() {
   const [imageCount, setImageCount] = useState("1");
   const [imageSize, setImageSize] = useState("");
   const [imageQuality, setImageQuality] = useState<ImageQuality>(getStoredImageQuality);
+  const [publishToGallery, setPublishToGallery] = useState(false);
   const [isHistoryOpen, setIsHistoryOpen] = useState(false);
   const [isPromptMarketOpen, setIsPromptMarketOpen] = useState(false);
   const [referenceImages, setReferenceImages] = useState<StoredReferenceImage[]>([]);
@@ -978,6 +981,7 @@ function ImagePageContent() {
     promptApplyRequestIdRef.current += 1;
     setImagePrompt("");
     setImageCount("1");
+    setPublishToGallery(false);
     setReferenceImages([]);
     if (fileInputRef.current) {
       fileInputRef.current.value = "";
@@ -992,6 +996,7 @@ function ImagePageContent() {
     setComposerMode(mode);
     if (mode === "chat") {
       promptApplyRequestIdRef.current += 1;
+      setPublishToGallery(false);
       setReferenceImages([]);
       if (fileInputRef.current) {
         fileInputRef.current.value = "";
@@ -1013,6 +1018,7 @@ function ImagePageContent() {
     setImagePrompt(preset.prompt);
     setImageCount(String(preset.count));
     setImageSize(preset.size);
+    setPublishToGallery(false);
     setReferenceImages([]);
     if (fileInputRef.current) {
       fileInputRef.current.value = "";
@@ -1049,6 +1055,7 @@ function ImagePageContent() {
     setImagePrompt(prompt.prompt);
     setImageCount("1");
     setImageSize("");
+    setPublishToGallery(false);
     setReferenceImages([]);
     setIsPromptMarketOpen(false);
     if (fileInputRef.current) {
@@ -1258,6 +1265,7 @@ function ImagePageContent() {
       count: targetTurn.mode === "chat" ? "1" : String(normalizeRequestedImageCount(targetTurn.count || targetTurn.images.length || 1)),
       size: targetTurn.mode === "chat" ? "" : targetTurn.size,
       quality: targetTurn.quality || DEFAULT_IMAGE_QUALITY,
+      visibility: targetTurn.visibility || "private",
       referenceImages: targetTurn.mode === "chat" ? [] : targetTurn.referenceImages,
     });
   }, []);
@@ -1486,6 +1494,7 @@ function ImagePageContent() {
                   activeTurn.quality || DEFAULT_IMAGE_QUALITY,
                   group.count,
                   taskMessages,
+                  activeTurn.visibility || "private",
                 )
               : createImageGenerationTask(
                   group.taskId,
@@ -1495,6 +1504,7 @@ function ImagePageContent() {
                   activeTurn.quality || DEFAULT_IMAGE_QUALITY,
                   group.count,
                   taskMessages,
+                  activeTurn.visibility || "private",
                 ),
           ),
         );
@@ -1548,6 +1558,7 @@ function ImagePageContent() {
                       activeTurn.quality || DEFAULT_IMAGE_QUALITY,
                       group.count,
                       taskMessages,
+                      activeTurn.visibility || "private",
                     )
                   : createImageGenerationTask(
                       group.taskId,
@@ -1557,6 +1568,7 @@ function ImagePageContent() {
                       activeTurn.quality || DEFAULT_IMAGE_QUALITY,
                       group.count,
                       taskMessages,
+                      activeTurn.visibility || "private",
                     ),
               ),
             );
@@ -1911,6 +1923,7 @@ function ImagePageContent() {
               count: imageCount,
               size: mode === "chat" ? "" : draft.size,
               quality: mode === "chat" ? undefined : draft.quality,
+              visibility: mode === "chat" ? "private" : draft.visibility,
             };
             if (!regenerate) {
               return baseTurn;
@@ -1986,6 +1999,7 @@ function ImagePageContent() {
         count: requestedCount,
         size: effectiveImageMode === "chat" ? "" : imageSize,
         quality: effectiveImageMode === "chat" ? undefined : imageQuality,
+        visibility: effectiveImageMode === "chat" ? "private" : publishToGallery ? "public" : "private",
         images: Array.from({ length: requestedCount }, (_, index) => {
           const imageId = `${turnId}-${index}`;
           return {
@@ -2371,6 +2385,7 @@ function ImagePageContent() {
                 imageSize={imageSize}
                 imageQuality={imageQuality}
                 imageQualityOptions={IMAGE_QUALITY_OPTIONS}
+                publishToGallery={publishToGallery}
                 imageOutputHint={imageOutputHint}
                 referenceImages={referenceImages}
                 textareaRef={textareaRef}
@@ -2381,6 +2396,7 @@ function ImagePageContent() {
                 onImageModelChange={setImageModel}
                 onImageSizeChange={setImageSize}
                 onImageQualityChange={setImageQuality}
+                onPublishToGalleryChange={setPublishToGallery}
                 onSubmit={handleSubmit}
                 onPickReferenceImage={() => fileInputRef.current?.click()}
                 onOpenPromptMarket={() => setIsPromptMarketOpen(true)}

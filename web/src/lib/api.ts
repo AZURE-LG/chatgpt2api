@@ -48,6 +48,7 @@ export function isChatModel(value: unknown): value is ImageModel {
 }
 
 export type ImageQuality = "low" | "medium" | "high";
+export type ImageVisibility = "private" | "public";
 
 const IMAGE_QUALITY_VALUES = new Set<string>(["low", "medium", "high"]);
 
@@ -140,6 +141,8 @@ export type ManagedImage = {
   name: string;
   path: string;
   owner_id?: string;
+  owner_name?: string;
+  visibility: ImageVisibility;
   date: string;
   size: number;
   url: string;
@@ -147,6 +150,7 @@ export type ManagedImage = {
   width?: number;
   height?: number;
   created_at: string;
+  published_at?: string;
 };
 
 export type SystemLog = {
@@ -174,6 +178,7 @@ export type ImageTask = {
   data?: Array<{ b64_json?: string; url?: string; revised_prompt?: string }>;
   error?: string;
   output_type?: "text";
+  visibility?: ImageVisibility;
 };
 
 export type ImageTaskMessage = {
@@ -458,6 +463,7 @@ export async function createImageGenerationTask(
   quality?: ImageQuality,
   count = 1,
   messages?: ImageTaskMessage[],
+  visibility: ImageVisibility = "private",
 ) {
   return httpRequest<ImageTask>("/api/image-tasks/generations", {
     method: "POST",
@@ -468,6 +474,7 @@ export async function createImageGenerationTask(
       ...(size ? { size } : {}),
       ...(quality ? { quality } : {}),
       ...(messages?.length ? { messages } : {}),
+      visibility,
       n: count,
     },
   });
@@ -482,6 +489,7 @@ export async function createImageEditTask(
   quality?: ImageQuality,
   count = 1,
   messages?: ImageTaskMessage[],
+  visibility: ImageVisibility = "private",
 ) {
   const formData = new FormData();
   const uploadFiles = Array.isArray(files) ? files : [files];
@@ -503,6 +511,7 @@ export async function createImageEditTask(
   if (messages?.length) {
     formData.append("messages", JSON.stringify(messages));
   }
+  formData.append("visibility", visibility);
   formData.append("n", String(count));
 
   return httpRequest<ImageTask>("/api/image-tasks/edits", {
@@ -578,10 +587,11 @@ export async function updateLoginPageImageSettings(
 }
 
 export async function fetchManagedImages(
-  filters: { start_date?: string; end_date?: string },
+  filters: { start_date?: string; end_date?: string; scope?: "mine" | "public" | "all" },
   options: { signal?: AbortSignal } = {},
 ) {
   const params = new URLSearchParams();
+  if (filters.scope) params.set("scope", filters.scope);
   if (filters.start_date) params.set("start_date", filters.start_date);
   if (filters.end_date) params.set("end_date", filters.end_date);
   const data = await httpRequest<{ items?: ManagedImage[] | null; groups?: Array<{ date: string; items: ManagedImage[] }> | null }>(
@@ -592,6 +602,16 @@ export async function fetchManagedImages(
     items: Array.isArray(data.items) ? data.items : [],
     groups: Array.isArray(data.groups) ? data.groups : [],
   };
+}
+
+export async function updateManagedImageVisibility(path: string, visibility: ImageVisibility) {
+  return httpRequest<{ item: Partial<ManagedImage> & { path: string; visibility: ImageVisibility } }>(
+    "/api/images/visibility",
+    {
+      method: "PATCH",
+      body: { path, visibility },
+    },
+  );
 }
 
 export async function deleteManagedImages(paths: string[]) {

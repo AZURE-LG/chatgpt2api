@@ -11,6 +11,7 @@ import {
   isImageTaskModel,
   type ImageModel,
   type ImageQuality,
+  type ImageVisibility,
 } from "@/lib/api";
 import { getStoredAuthSession, type StoredAuthSession } from "@/store/auth";
 
@@ -46,6 +47,7 @@ export type ImageTurn = {
   count: number;
   size: string;
   quality?: ImageQuality;
+  visibility?: ImageVisibility;
   images: StoredImage[];
   createdAt: string;
   status: ImageTurnStatus;
@@ -202,6 +204,7 @@ function normalizeTurn(turn: ImageTurn & Record<string, unknown>): ImageTurn {
     count: Math.max(1, Number(turn.count || normalizedImages.length || 1)),
     size: typeof turn.size === "string" ? turn.size : "",
     quality: isImageQuality(turn.quality) ? turn.quality : undefined,
+    visibility: turn.visibility === "public" ? "public" : "private",
     images: normalizedImages,
     createdAt: String(turn.createdAt || new Date().toISOString()),
     status:
