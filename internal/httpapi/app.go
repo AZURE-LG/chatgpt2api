@@ -1115,10 +1115,14 @@ func (a *App) decorateImageList(payload map[string]any) {
 }
 
 func (a *App) decorateImageItem(item map[string]any, ownerNames map[string]string) {
-	if item == nil || util.Clean(item["owner_name"]) != "" {
+	if item == nil {
 		return
 	}
+	ownerName := util.Clean(item["owner_name"])
 	ownerID := util.Clean(item["owner_id"])
+	if ownerName != "" && ownerName != "未知用户" {
+		return
+	}
 	if ownerID == "" {
 		item["owner_name"] = "未知用户"
 		return

@@ -117,7 +117,11 @@ function getManagedImageFormat(item: ManagedImage) {
 }
 
 function imageOwnerLabel(item: ManagedImage) {
-  return item.owner_name?.trim() || "未知用户";
+  const ownerName = item.owner_name?.trim();
+  if (ownerName && ownerName !== "未知用户") {
+    return ownerName;
+  }
+  return "未知用户";
 }
 
 function getManagedImageOrientation(item: ManagedImage): ImageOrientationFilter {

@@ -774,6 +774,10 @@ func TestImageManagementIsScopedByOwner(t *testing.T) {
 	if err != nil {
 		t.Fatalf("UpsertLinuxDoSession() error = %v", err)
 	}
+	otherOwner := service.AuthOwner{ID: "linuxdo:456", Name: "bob", Provider: service.AuthProviderLinuxDo}
+	if _, _, err := app.auth.UpsertAPIKeyForOwner("bob key", otherOwner); err != nil {
+		t.Fatalf("UpsertAPIKeyForOwner(other) error = %v", err)
+	}
 	aliceRel := "2026/04/29/alice.png"
 	bobRel := "2026/04/29/bob.png"
 	legacyRel := "2026/04/29/legacy.png"
@@ -883,12 +887,18 @@ func TestImageManagementIsScopedByOwner(t *testing.T) {
 		t.Fatalf("admin public gallery should see all images, got %#v", list)
 	}
 	seenPaths := make(map[string]bool, len(items))
+	ownerNamesByPath := make(map[string]string, len(items))
 	for _, item := range items {
 		path, _ := item["path"].(string)
 		seenPaths[path] = true
+		ownerName, _ := item["owner_name"].(string)
+		ownerNamesByPath[path] = ownerName
 	}
 	if !seenPaths[aliceRel] || !seenPaths[bobRel] || !seenPaths[legacyRel] {
 		t.Fatalf("admin public gallery paths = %#v", items)
+	}
+	if ownerNamesByPath[bobRel] != otherOwner.Name {
+		t.Fatalf("admin public gallery should resolve owner name, got owner_name=%q in %#v", ownerNamesByPath[bobRel], items)
 	}
 
 	req = httptest.NewRequest(http.MethodDelete, "/api/images", strings.NewReader(`{"paths":["`+bobRel+`","`+aliceRel+`"]}`))
