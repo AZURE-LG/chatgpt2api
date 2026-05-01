@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from "react";
 import { ChevronDown, ChevronUp, Github, LogOut, MoonStar, Send, Sun, UserCircle2 } from "lucide-react";
+import { motion, useReducedMotion, type Transition } from "motion/react";
 import { Link, NavLink, useLocation, useNavigate } from "react-router-dom";
 
 import { AnnouncementNotifications } from "@/components/announcement-banner";
@@ -42,6 +43,16 @@ const navItems = [
 const profileNavItem = { href: "/profile", label: "个人中心" };
 const QUOTA_REFRESH_EVENT = "chatgpt2api:quota-refresh";
 const PRIMARY_NAV_ID = "primary-navigation";
+const NAV_ACTIVE_LAYOUT_ID = "top-nav-active-pill";
+const navActiveTransition: Transition = {
+  type: "spring",
+  stiffness: 520,
+  damping: 42,
+  mass: 0.7,
+};
+const reducedNavActiveTransition: Transition = {
+  duration: 0.01,
+};
 
 function formatAvailableQuota(accounts: Account[]) {
   const availableAccounts = accounts.filter((account) => account.status !== "禁用");
@@ -87,21 +98,35 @@ function isActivePath(pathname: string, href: string) {
 
 function NavPill({ item, pathname }: { item: NavItem; pathname: string }) {
   const active = isActivePath(pathname, item.href);
+  const prefersReducedMotion = useReducedMotion();
 
   return (
     <NavLink
       to={item.href}
       className={() =>
         cn(
-          "relative shrink-0 whitespace-nowrap rounded-full px-3 py-1.5 text-[13px] font-medium transition sm:text-sm",
+          "relative isolate shrink-0 whitespace-nowrap rounded-full px-3 py-1.5 text-[13px] font-medium transition-colors sm:text-sm",
           "snap-start lg:snap-none",
           active
-            ? "bg-black/[0.06] text-[#18181b] shadow-[inset_0_0_0_1px_rgba(20,86,240,0.08)] dark:bg-accent dark:text-accent-foreground"
+            ? "text-[#18181b] dark:text-accent-foreground"
             : "text-[#45515e] hover:bg-black/[0.05] hover:text-[#18181b] dark:text-muted-foreground dark:hover:bg-accent dark:hover:text-accent-foreground",
         )
       }
     >
-      {item.label}
+      {active ? (
+        <motion.span
+          layoutId={NAV_ACTIVE_LAYOUT_ID}
+          transition={prefersReducedMotion ? reducedNavActiveTransition : navActiveTransition}
+          className="absolute inset-0 -z-10 rounded-full bg-black/[0.06] shadow-[inset_0_0_0_1px_rgba(20,86,240,0.08)] dark:bg-accent"
+        />
+      ) : null}
+      <motion.span
+        animate={{ scale: active && !prefersReducedMotion ? 1.03 : 1 }}
+        transition={prefersReducedMotion ? reducedNavActiveTransition : { duration: 0.16, ease: [0.22, 1, 0.36, 1] }}
+        className="relative z-10 block"
+      >
+        {item.label}
+      </motion.span>
     </NavLink>
   );
 }

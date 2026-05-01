@@ -19,6 +19,7 @@ import {
   useRef,
   useState,
   type ClipboardEvent,
+  type DragEvent,
   type KeyboardEvent,
   type PointerEvent,
   type ReactNode,
@@ -69,6 +70,7 @@ const PROMPT_AREA_MIN_HEIGHT = 74;
 const PROMPT_AREA_DEFAULT_HEIGHT = 104;
 const PROMPT_AREA_MAX_HEIGHT = 320;
 const PROMPT_AREA_KEYBOARD_STEP = 16;
+const IMAGE_FILE_EXTENSION_PATTERN = /\.(avif|bmp|gif|heic|heif|jpeg|jpg|png|svg|webp)$/i;
 
 function getPromptAreaMaxHeight() {
   if (typeof window === "undefined") {
@@ -79,6 +81,31 @@ function getPromptAreaMaxHeight() {
 
 function clampPromptAreaHeight(height: number) {
   return Math.min(Math.max(height, PROMPT_AREA_MIN_HEIGHT), getPromptAreaMaxHeight());
+}
+
+function isImageFile(file: File) {
+  return file.type.startsWith("image/") || IMAGE_FILE_EXTENSION_PATTERN.test(file.name);
+}
+
+function getImageFiles(files: FileList | File[]) {
+  return Array.from(files).filter(isImageFile);
+}
+
+function hasDraggedFiles(dataTransfer: DataTransfer) {
+  return Array.from(dataTransfer.types).includes("Files");
+}
+
+function hasDraggedImage(dataTransfer: DataTransfer) {
+  if (!hasDraggedFiles(dataTransfer)) {
+    return false;
+  }
+
+  const items = Array.from(dataTransfer.items);
+  if (items.length === 0) {
+    return true;
+  }
+
+  return items.some((item) => item.kind === "file" && (item.type === "" || item.type.startsWith("image/")));
 }
 
 function ImageComposerDock({ children }: { children: ReactNode }) {
@@ -123,6 +150,7 @@ export function ImageComposer({
   const [isImageSettingsOpen, setIsImageSettingsOpen] = useState(false);
   const [promptAreaHeight, setPromptAreaHeight] = useState(PROMPT_AREA_DEFAULT_HEIGHT);
   const [isPromptAreaResizing, setIsPromptAreaResizing] = useState(false);
+  const [isReferenceImageDragActive, setIsReferenceImageDragActive] = useState(false);
   const composerPanelRef = useRef<HTMLDivElement>(null);
   const composerToolbarRef = useRef<HTMLDivElement>(null);
   const modelMenuRef = useRef<HTMLDivElement>(null);
@@ -130,6 +158,7 @@ export function ImageComposer({
   const resolutionMenuRef = useRef<HTMLDivElement>(null);
   const qualityMenuRef = useRef<HTMLDivElement>(null);
   const promptAreaResizeRef = useRef<{ pointerOffsetY: number } | null>(null);
+  const referenceImageDragDepthRef = useRef(0);
   const lightboxImages = useMemo(
     () => referenceImages.map((image, index) => ({ id: `${image.name}-${index}`, src: image.dataUrl })),
     [referenceImages],
@@ -208,13 +237,73 @@ export function ImageComposer({
     if (composerMode === "chat") {
       return;
     }
-    const imageFiles = Array.from(event.clipboardData.files).filter((file) => file.type.startsWith("image/"));
+    const imageFiles = getImageFiles(event.clipboardData.files);
     if (imageFiles.length === 0) {
       return;
     }
 
     event.preventDefault();
     void onReferenceImageChange(imageFiles);
+  };
+
+  const addReferenceImages = (files: File[]) => {
+    const imageFiles = getImageFiles(files);
+    if (imageFiles.length === 0) {
+      return;
+    }
+
+    if (composerMode === "chat") {
+      onComposerModeChange("image");
+    }
+    void onReferenceImageChange(imageFiles);
+  };
+
+  const resetReferenceImageDragState = () => {
+    referenceImageDragDepthRef.current = 0;
+    setIsReferenceImageDragActive(false);
+  };
+
+  const handleReferenceImageDragEnter = (event: DragEvent<HTMLDivElement>) => {
+    if (!hasDraggedImage(event.dataTransfer)) {
+      return;
+    }
+
+    event.preventDefault();
+    referenceImageDragDepthRef.current += 1;
+    setIsReferenceImageDragActive(true);
+    event.dataTransfer.dropEffect = "copy";
+  };
+
+  const handleReferenceImageDragOver = (event: DragEvent<HTMLDivElement>) => {
+    if (!hasDraggedImage(event.dataTransfer)) {
+      return;
+    }
+
+    event.preventDefault();
+    setIsReferenceImageDragActive(true);
+    event.dataTransfer.dropEffect = "copy";
+  };
+
+  const handleReferenceImageDragLeave = (event: DragEvent<HTMLDivElement>) => {
+    if (!hasDraggedImage(event.dataTransfer)) {
+      return;
+    }
+
+    event.preventDefault();
+    referenceImageDragDepthRef.current = Math.max(0, referenceImageDragDepthRef.current - 1);
+    if (referenceImageDragDepthRef.current === 0) {
+      setIsReferenceImageDragActive(false);
+    }
+  };
+
+  const handleReferenceImageDrop = (event: DragEvent<HTMLDivElement>) => {
+    if (!hasDraggedFiles(event.dataTransfer)) {
+      return;
+    }
+
+    event.preventDefault();
+    resetReferenceImageDragState();
+    addReferenceImages(Array.from(event.dataTransfer.files));
   };
 
   const handlePromptResizeStart = (event: PointerEvent<HTMLButtonElement>) => {
@@ -311,10 +400,7 @@ export function ImageComposer({
           if (files.length === 0) {
             return;
           }
-          if (composerMode === "chat") {
-            onComposerModeChange("image");
-          }
-          void onReferenceImageChange(files);
+          addReferenceImages(files);
         }}
       />
 
@@ -355,8 +441,24 @@ export function ImageComposer({
 
       <div
         ref={composerPanelRef}
-        className="overflow-visible rounded-[30px] border border-[#dedee3] bg-[#fffcff]/95 shadow-[0_20px_70px_-42px_rgba(15,23,42,0.5)] backdrop-blur-xl dark:border-border dark:bg-card/95 dark:shadow-[0_24px_80px_-38px_rgba(0,0,0,0.78)] sm:rounded-[24px] sm:border-[#f2f3f5] sm:bg-white/95 sm:shadow-[0_24px_80px_-34px_rgba(15,23,42,0.42)] sm:dark:border-border sm:dark:bg-card/95"
+        className={cn(
+          "relative overflow-visible rounded-[30px] border border-[#dedee3] bg-[#fffcff]/95 shadow-[0_20px_70px_-42px_rgba(15,23,42,0.5)] backdrop-blur-xl transition-colors dark:border-border dark:bg-card/95 dark:shadow-[0_24px_80px_-38px_rgba(0,0,0,0.78)] sm:rounded-[24px] sm:border-[#f2f3f5] sm:bg-white/95 sm:shadow-[0_24px_80px_-34px_rgba(15,23,42,0.42)] sm:dark:border-border sm:dark:bg-card/95",
+          isReferenceImageDragActive &&
+            "border-[#1456f0] bg-[#eef4ff]/95 dark:border-sky-500/70 dark:bg-sky-950/45 sm:border-[#1456f0] sm:bg-[#eef4ff]/95 sm:dark:border-sky-500/70 sm:dark:bg-sky-950/45",
+        )}
+        onDragEnter={handleReferenceImageDragEnter}
+        onDragOver={handleReferenceImageDragOver}
+        onDragLeave={handleReferenceImageDragLeave}
+        onDrop={handleReferenceImageDrop}
       >
+        {isReferenceImageDragActive ? (
+          <div className="pointer-events-none absolute inset-0 z-20 flex items-center justify-center rounded-[30px] border-2 border-dashed border-[#1456f0]/70 bg-white/70 text-sm font-medium text-[#1456f0] backdrop-blur-sm dark:border-sky-400/70 dark:bg-background/70 dark:text-sky-300 sm:rounded-[24px]">
+            <span className="inline-flex items-center gap-2 rounded-full bg-white/90 px-4 py-2 shadow-[0_10px_30px_-18px_rgba(15,23,42,0.5)] dark:bg-card/90">
+              <ImagePlus className="size-4" />
+              松开上传图片
+            </span>
+          </div>
+        ) : null}
         <button
           type="button"
           className={cn(
@@ -530,7 +632,6 @@ export function ImageComposer({
                       align="start"
                       side="top"
                       sideOffset={8}
-                      arrowClassName="fill-white stroke-[#e5e7eb] dark:fill-card dark:stroke-border"
                       className="z-[70] w-[min(calc(100vw-2rem),22rem)] overflow-visible rounded-[20px] border-[#e5e7eb] bg-white p-2.5 shadow-[0_24px_80px_-32px_rgba(15,23,42,0.35)] dark:border-border dark:bg-card dark:shadow-[0_24px_80px_-28px_rgba(0,0,0,0.72)]"
                       onOpenAutoFocus={(event) => event.preventDefault()}
                     >
@@ -654,7 +755,6 @@ export function ImageComposer({
                           align="center"
                           side="top"
                           sideOffset={6}
-                          arrowClassName="fill-white stroke-[#e5e7eb] dark:fill-card dark:stroke-border"
                           className="z-[120] w-[min(calc(100vw-2rem),20rem)] rounded-xl border-[#e5e7eb] bg-white px-4 py-3 text-xs leading-6 text-[#45515e] shadow-[0_24px_80px_-32px_rgba(15,23,42,0.35)] dark:border-border dark:bg-card dark:text-muted-foreground dark:shadow-[0_24px_80px_-28px_rgba(0,0,0,0.72)]"
                           onOpenAutoFocus={(event) => event.preventDefault()}
                         >

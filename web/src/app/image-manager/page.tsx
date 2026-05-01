@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Check, Copy, Download, Eye, Globe2, ImageIcon, LoaderCircle, Lock, MoreHorizontal, RefreshCw, Search, Trash2, X } from "lucide-react";
+import { Check, Copy, Download, Eye, Globe2, ImageIcon, LoaderCircle, Lock, MoreHorizontal, RefreshCw, Search, SlidersHorizontal, Trash2, X } from "lucide-react";
 import { toast } from "sonner";
 
 import { DateRangeFilter } from "@/components/date-range-filter";
@@ -37,6 +37,7 @@ import {
   type ImageGalleryView,
 } from "@/lib/image-manager-cache";
 import { formatImageFileSize } from "@/lib/image-size";
+import { cn } from "@/lib/utils";
 import { useAuthGuard } from "@/lib/use-auth-guard";
 import { hasAPIPermission, type StoredAuthSession } from "@/store/auth";
 
@@ -130,6 +131,36 @@ function getManagedImageOrientation(item: ManagedImage): ImageOrientationFilter 
   return item.width > item.height ? "landscape" : "portrait";
 }
 
+function imageFormatFilterLabel(format: ImageFormatFilter) {
+  const labels: Record<ImageFormatFilter, string> = {
+    all: "全部格式",
+    png: "PNG",
+    jpg: "JPG",
+    webp: "WEBP",
+    gif: "GIF",
+    other: "其他",
+  };
+  return labels[format];
+}
+
+function imageOrientationFilterLabel(orientation: ImageOrientationFilter) {
+  const labels: Record<ImageOrientationFilter, string> = {
+    all: "全部方向",
+    landscape: "横图",
+    portrait: "竖图",
+    square: "方图",
+    unknown: "未知尺寸",
+  };
+  return labels[orientation];
+}
+
+function imageVisibilityFilterLabel(visibility: ImageVisibilityFilter) {
+  if (visibility === "all") {
+    return "全部状态";
+  }
+  return imageVisibilityLabel(visibility);
+}
+
 function matchesManagedImageKeyword(item: ManagedImage, keyword: string) {
   const normalizedKeyword = keyword.trim().toLowerCase();
   if (!normalizedKeyword) {
@@ -176,11 +207,9 @@ const IMAGE_MASONRY_BREAKPOINTS = [
 ] as const;
 const IMAGE_MANAGER_BATCH_SIZE = 40;
 const IMAGE_MANAGER_LOAD_MORE_DELAY_MS = 220;
-const AUTO_REFRESH_INTERVAL_OPTIONS = [60, 30, 10, 5] as const;
-const AUTO_REFRESH_DISABLED_VALUE = "off";
+const AUTO_REFRESH_INTERVAL_OPTIONS = [5, 10, 15, 30] as const;
 
-type ImageAutoRefreshInterval = (typeof AUTO_REFRESH_INTERVAL_OPTIONS)[number] | typeof AUTO_REFRESH_DISABLED_VALUE;
-type EnabledImageAutoRefreshInterval = Exclude<ImageAutoRefreshInterval, typeof AUTO_REFRESH_DISABLED_VALUE>;
+type ImageAutoRefreshInterval = (typeof AUTO_REFRESH_INTERVAL_OPTIONS)[number];
 
 function getImageMasonryColumnCount() {
   if (typeof window === "undefined") {
@@ -246,7 +275,11 @@ function ImageManagerContent({
   const [loadError, setLoadError] = useState("");
   const [isAutoRefreshing, setIsAutoRefreshing] = useState(false);
   const [isImageActionsOpen, setIsImageActionsOpen] = useState(false);
+  const [isAutoRefreshMenuOpen, setIsAutoRefreshMenuOpen] = useState(false);
+  const [isAutoRefreshEnabled, setIsAutoRefreshEnabled] = useState(true);
   const [autoRefreshInterval, setAutoRefreshInterval] = useState<ImageAutoRefreshInterval>(30);
+  const [autoRefreshSecondsRemaining, setAutoRefreshSecondsRemaining] = useState(autoRefreshInterval);
+  const [isMobileFiltersOpen, setIsMobileFiltersOpen] = useState(false);
   const [visibleItemLimit, setVisibleItemLimit] = useState(IMAGE_MANAGER_BATCH_SIZE);
   const [isLoadingMore, setIsLoadingMore] = useState(false);
   const [searchKeyword, setSearchKeyword] = useState("");
@@ -274,6 +307,13 @@ function ImageManagerContent({
   );
   const hasLocalFilters = searchKeyword.trim() !== "" || visibilityFilter !== "all" || formatFilter !== "all" || orientationFilter !== "all";
   const hasActiveFilters = hasLocalFilters || startDate !== "" || endDate !== "";
+  const activeFilterLabels = [
+    startDate && endDate ? `${startDate} 至 ${endDate}` : startDate ? startDate : "",
+    visibilityFilter !== "all" ? imageVisibilityFilterLabel(visibilityFilter) : "",
+    formatFilter !== "all" ? imageFormatFilterLabel(formatFilter) : "",
+    orientationFilter !== "all" ? imageOrientationFilterLabel(orientationFilter) : "",
+  ].filter(Boolean);
+  const activeFilterCount = activeFilterLabels.length;
   const visibleItems = useMemo(
     () => filteredItems.slice(0, visibleItemLimit),
     [filteredItems, visibleItemLimit],
@@ -478,15 +518,21 @@ function ImageManagerContent({
     setVisibleItemLimit(IMAGE_MANAGER_BATCH_SIZE);
   };
 
-  const updateAutoRefreshInterval = (value: string) => {
-    if (value === AUTO_REFRESH_DISABLED_VALUE) {
-      setAutoRefreshInterval(AUTO_REFRESH_DISABLED_VALUE);
-      return;
+  const toggleAutoRefresh = () => {
+    const next = !isAutoRefreshEnabled;
+    setIsAutoRefreshEnabled(next);
+    if (!next) {
+      autoRefreshAbortRef.current?.abort();
+      setIsAutoRefreshing(false);
     }
-    const interval = Number(value);
-    if (AUTO_REFRESH_INTERVAL_OPTIONS.includes(interval as EnabledImageAutoRefreshInterval)) {
-      setAutoRefreshInterval(interval as EnabledImageAutoRefreshInterval);
-    }
+    setAutoRefreshSecondsRemaining(autoRefreshInterval);
+  };
+
+  const updateAutoRefreshInterval = (interval: ImageAutoRefreshInterval) => {
+    setAutoRefreshInterval(interval);
+    setAutoRefreshSecondsRemaining(interval);
+    setIsAutoRefreshEnabled(true);
+    setIsAutoRefreshMenuOpen(false);
   };
 
   const toggleImageSelection = (item: ManagedImage) => {
@@ -664,16 +710,25 @@ function ImageManagerContent({
   }, [loadImages]);
 
   useEffect(() => {
-    if (autoRefreshInterval === AUTO_REFRESH_DISABLED_VALUE) {
+    if (!isAutoRefreshEnabled) {
       autoRefreshAbortRef.current?.abort();
       setIsAutoRefreshing(false);
+      setAutoRefreshSecondsRemaining(autoRefreshInterval);
       return;
     }
+
+    let secondsUntilNextRefresh = autoRefreshInterval;
+    setAutoRefreshSecondsRemaining(secondsUntilNextRefresh);
     const timer = window.setInterval(() => {
-      void refreshNewImages();
-    }, autoRefreshInterval * 1000);
+      secondsUntilNextRefresh -= 1;
+      if (secondsUntilNextRefresh <= 0) {
+        void refreshNewImages();
+        secondsUntilNextRefresh = autoRefreshInterval;
+      }
+      setAutoRefreshSecondsRemaining(secondsUntilNextRefresh);
+    }, 1000);
     return () => window.clearInterval(timer);
-  }, [autoRefreshInterval, refreshNewImages]);
+  }, [autoRefreshInterval, isAutoRefreshEnabled, refreshNewImages]);
 
   useEffect(() => {
     autoRefreshAbortRef.current?.abort();
@@ -709,6 +764,167 @@ function ImageManagerContent({
       }
     };
   }, []);
+
+  const autoRefreshButtonLabel = isAutoRefreshEnabled
+    ? `自动刷新: ${autoRefreshSecondsRemaining}s`
+    : "自动刷新: 关闭";
+
+  const renderDateRangeFilter = (className = "w-full sm:w-full") => (
+    <DateRangeFilter
+      className={className}
+      startDate={startDate}
+      endDate={endDate}
+      onChange={(start, end) => {
+        setStartDate(start);
+        setEndDate(end);
+        setSelectedImageIds({});
+        setVisibleItemLimit(IMAGE_MANAGER_BATCH_SIZE);
+      }}
+    />
+  );
+
+  const renderSearchFilter = (placeholder = "搜索文件、路径、作者、日期") => (
+    <div className="relative min-w-0">
+      <Search className="pointer-events-none absolute top-1/2 left-3 size-4 -translate-y-1/2 text-muted-foreground" />
+      <Input
+        value={searchKeyword}
+        onChange={(event) => updateSearchKeyword(event.target.value)}
+        placeholder={placeholder}
+        className="h-10 rounded-lg pr-9 pl-9"
+      />
+      {searchKeyword ? (
+        <button
+          type="button"
+          className="absolute top-1/2 right-2 inline-flex size-6 -translate-y-1/2 items-center justify-center rounded-full text-muted-foreground transition hover:bg-muted hover:text-foreground"
+          onClick={() => updateSearchKeyword("")}
+          aria-label="清空搜索"
+          title="清空搜索"
+        >
+          <X className="size-3.5" />
+        </button>
+      ) : null}
+    </div>
+  );
+
+  const renderFilterControls = () => (
+    <>
+      <Select value={visibilityFilter} onValueChange={(value) => updateVisibilityFilter(value as ImageVisibilityFilter)}>
+        <SelectTrigger className="h-10 min-w-0 rounded-lg">
+          <SelectValue />
+        </SelectTrigger>
+        <SelectContent>
+          <SelectGroup>
+            <SelectItem value="all">全部状态</SelectItem>
+            <SelectItem value="public">已公开</SelectItem>
+            <SelectItem value="private">私有</SelectItem>
+          </SelectGroup>
+        </SelectContent>
+      </Select>
+      <Select value={formatFilter} onValueChange={(value) => updateFormatFilter(value as ImageFormatFilter)}>
+        <SelectTrigger className="h-10 min-w-0 rounded-lg">
+          <SelectValue />
+        </SelectTrigger>
+        <SelectContent>
+          <SelectGroup>
+            <SelectItem value="all">全部格式</SelectItem>
+            <SelectItem value="png">PNG</SelectItem>
+            <SelectItem value="jpg">JPG</SelectItem>
+            <SelectItem value="webp">WEBP</SelectItem>
+            <SelectItem value="gif">GIF</SelectItem>
+            <SelectItem value="other">其他</SelectItem>
+          </SelectGroup>
+        </SelectContent>
+      </Select>
+      <Select value={orientationFilter} onValueChange={(value) => updateOrientationFilter(value as ImageOrientationFilter)}>
+        <SelectTrigger className="h-10 min-w-0 rounded-lg">
+          <SelectValue />
+        </SelectTrigger>
+        <SelectContent>
+          <SelectGroup>
+            <SelectItem value="all">全部方向</SelectItem>
+            <SelectItem value="landscape">横图</SelectItem>
+            <SelectItem value="portrait">竖图</SelectItem>
+            <SelectItem value="square">方图</SelectItem>
+            <SelectItem value="unknown">未知尺寸</SelectItem>
+          </SelectGroup>
+        </SelectContent>
+      </Select>
+    </>
+  );
+
+  const renderAutoRefreshControls = (className = "flex min-w-0 items-center gap-2") => (
+    <div className={className}>
+      <Popover open={isAutoRefreshMenuOpen} onOpenChange={setIsAutoRefreshMenuOpen}>
+        <PopoverTrigger asChild>
+          <Button
+            type="button"
+            variant="outline"
+            className="h-10 min-w-0 flex-1 justify-start rounded-lg px-3 text-sm font-medium"
+            aria-label={autoRefreshButtonLabel}
+          >
+            <RefreshCw className={cn("size-4", isAutoRefreshing && "animate-spin")} />
+            <span className="truncate">{autoRefreshButtonLabel}</span>
+          </Button>
+        </PopoverTrigger>
+        <PopoverContent
+          align="end"
+          sideOffset={8}
+          className="w-[min(calc(100vw-2rem),17.5rem)] p-1"
+        >
+          <div className="flex flex-col gap-1" role="menu">
+            <Button
+              type="button"
+              variant="ghost"
+              className="h-10 w-full justify-between rounded-md px-3 text-sm font-normal"
+              onClick={toggleAutoRefresh}
+              role="menuitemcheckbox"
+              aria-checked={isAutoRefreshEnabled}
+            >
+              <span>启用自动刷新</span>
+              {isAutoRefreshEnabled ? (
+                <Check className="size-4 text-[#21b8a6]" />
+              ) : (
+                <span className="size-4" aria-hidden="true" />
+              )}
+            </Button>
+            {AUTO_REFRESH_INTERVAL_OPTIONS.map((interval) => {
+              const selected = autoRefreshInterval === interval;
+              return (
+                <Button
+                  key={interval}
+                  type="button"
+                  variant="ghost"
+                  className="h-10 w-full justify-between rounded-md px-3 text-sm font-normal"
+                  onClick={() => updateAutoRefreshInterval(interval)}
+                  role="menuitemradio"
+                  aria-checked={selected}
+                >
+                  <span>{interval} 秒</span>
+                  {selected ? (
+                    <Check className="size-4 text-[#21b8a6]" />
+                  ) : (
+                    <span className="size-4" aria-hidden="true" />
+                  )}
+                </Button>
+              );
+            })}
+          </div>
+        </PopoverContent>
+      </Popover>
+      <Button
+        type="button"
+        variant="outline"
+        size="icon"
+        className="size-10 rounded-lg"
+        disabled={isLoading || isMutatingImages}
+        onClick={() => void loadImages({ force: true })}
+        aria-label="刷新图片库"
+        title="刷新图片库"
+      >
+        <RefreshCw className={cn("size-4", isLoading && "animate-spin")} />
+      </Button>
+    </div>
+  );
 
   return (
     <section className="flex flex-col gap-5 pb-20 sm:pb-24">
@@ -746,12 +962,6 @@ function ImageManagerContent({
               <ImageIcon className="size-4 shrink-0" />
               <span>{galleryView === "mine" ? "个人图库" : "公开图库"}</span>
               <span>{hasLocalFilters ? `显示 ${filteredItems.length} / ${items.length} 张` : `共 ${items.length} 张`}</span>
-              {isAutoRefreshing ? (
-                <span className="inline-flex items-center gap-1 text-[#1456f0]">
-                  <LoaderCircle className="size-3 animate-spin" />
-                  自动刷新中
-                </span>
-              ) : null}
             </div>
           </div>
 
@@ -769,93 +979,76 @@ function ImageManagerContent({
                 </button>
               ) : null}
             </div>
-            <div className="grid grid-cols-2 gap-2 sm:grid-cols-4 xl:grid-cols-[240px_minmax(240px,1fr)_150px_140px_140px_140px]">
-              <DateRangeFilter
-                className="col-span-2 w-full xl:col-span-1 xl:w-[240px]"
-                startDate={startDate}
-                endDate={endDate}
-                onChange={(start, end) => {
-                  setStartDate(start);
-                  setEndDate(end);
-                  setSelectedImageIds({});
-                  setVisibleItemLimit(IMAGE_MANAGER_BATCH_SIZE);
-                }}
-              />
-              <div className="relative col-span-2 xl:col-span-1">
-                <Search className="pointer-events-none absolute top-1/2 left-3 size-4 -translate-y-1/2 text-muted-foreground" />
-                <Input
-                  value={searchKeyword}
-                  onChange={(event) => updateSearchKeyword(event.target.value)}
-                  placeholder="搜索文件、路径、作者、日期"
-                  className="h-10 rounded-lg pr-9 pl-9"
-                />
-                {searchKeyword ? (
+            <div className="md:hidden">
+              <div className="flex items-center gap-2">
+                <div className="min-w-0 flex-1">
+                  {renderSearchFilter("搜索图片")}
+                </div>
+                <button
+                  type="button"
+                  className={cn(
+                    "relative inline-flex size-10 shrink-0 items-center justify-center rounded-full border border-border bg-background text-muted-foreground transition hover:bg-accent hover:text-accent-foreground",
+                    isMobileFiltersOpen && "border-[#bfdbfe] bg-[#eef4ff] text-[#1456f0] dark:border-sky-900/70 dark:bg-sky-950/30 dark:text-sky-300",
+                  )}
+                  onClick={() => setIsMobileFiltersOpen((open) => !open)}
+                  aria-label={isMobileFiltersOpen ? "收起筛选项" : "展开筛选项"}
+                  aria-expanded={isMobileFiltersOpen}
+                  title={isMobileFiltersOpen ? "收起筛选" : "筛选"}
+                >
+                  <SlidersHorizontal className="size-4" />
+                  {activeFilterCount > 0 ? (
+                    <span className="absolute -top-0.5 -right-0.5 inline-flex size-4 items-center justify-center rounded-full bg-[#1456f0] text-[10px] font-semibold text-white">
+                      {activeFilterCount}
+                    </span>
+                  ) : null}
+                </button>
+              </div>
+              {activeFilterLabels.length > 0 && !isMobileFiltersOpen ? (
+                <div className="hide-scrollbar mt-2 flex gap-1.5 overflow-x-auto">
+                  {activeFilterLabels.map((label) => (
+                    <span
+                      key={label}
+                      className="shrink-0 rounded-full bg-muted px-2.5 py-1 text-[11px] font-medium text-muted-foreground"
+                    >
+                      {label}
+                    </span>
+                  ))}
                   <button
                     type="button"
-                    className="absolute top-1/2 right-2 inline-flex size-6 -translate-y-1/2 items-center justify-center rounded-full text-muted-foreground transition hover:bg-muted hover:text-foreground"
-                    onClick={() => updateSearchKeyword("")}
-                    aria-label="清空搜索"
-                    title="清空搜索"
+                    className="shrink-0 rounded-full px-2.5 py-1 text-[11px] font-medium text-[#1456f0]"
+                    onClick={clearImageFilters}
                   >
-                    <X className="size-3.5" />
+                    清除
                   </button>
-                ) : null}
+                </div>
+              ) : null}
+              {isMobileFiltersOpen ? (
+                <div className="mt-2 grid grid-cols-2 gap-2">
+                  <div className="col-span-2">{renderDateRangeFilter("w-full sm:w-full")}</div>
+                  {renderFilterControls()}
+                  <Button
+                    type="button"
+                    variant="outline"
+                    className="col-span-2 h-9 rounded-full text-xs shadow-none"
+                    onClick={clearImageFilters}
+                    disabled={!hasActiveFilters}
+                  >
+                    重置筛选
+                  </Button>
+                </div>
+              ) : null}
+              {renderAutoRefreshControls("mt-2 flex min-w-0 items-center gap-2")}
+            </div>
+
+            <div className="hidden flex-col gap-2 md:flex">
+              <div className="grid grid-cols-1 gap-2 lg:grid-cols-2">
+                {renderDateRangeFilter("w-full sm:w-full")}
+                {renderSearchFilter()}
               </div>
-              <Select value={visibilityFilter} onValueChange={(value) => updateVisibilityFilter(value as ImageVisibilityFilter)}>
-                <SelectTrigger className="h-10 min-w-0 rounded-lg">
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectGroup>
-                    <SelectItem value="all">全部状态</SelectItem>
-                    <SelectItem value="public">已公开</SelectItem>
-                    <SelectItem value="private">私有</SelectItem>
-                  </SelectGroup>
-                </SelectContent>
-              </Select>
-              <Select value={formatFilter} onValueChange={(value) => updateFormatFilter(value as ImageFormatFilter)}>
-                <SelectTrigger className="h-10 min-w-0 rounded-lg">
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectGroup>
-                    <SelectItem value="all">全部格式</SelectItem>
-                    <SelectItem value="png">PNG</SelectItem>
-                    <SelectItem value="jpg">JPG</SelectItem>
-                    <SelectItem value="webp">WEBP</SelectItem>
-                    <SelectItem value="gif">GIF</SelectItem>
-                    <SelectItem value="other">其他</SelectItem>
-                  </SelectGroup>
-                </SelectContent>
-              </Select>
-              <Select value={orientationFilter} onValueChange={(value) => updateOrientationFilter(value as ImageOrientationFilter)}>
-                <SelectTrigger className="h-10 min-w-0 rounded-lg">
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectGroup>
-                    <SelectItem value="all">全部方向</SelectItem>
-                    <SelectItem value="landscape">横图</SelectItem>
-                    <SelectItem value="portrait">竖图</SelectItem>
-                    <SelectItem value="square">方图</SelectItem>
-                    <SelectItem value="unknown">未知尺寸</SelectItem>
-                  </SelectGroup>
-                </SelectContent>
-              </Select>
-              <Select value={String(autoRefreshInterval)} onValueChange={updateAutoRefreshInterval}>
-                <SelectTrigger className="h-10 min-w-0 rounded-lg">
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectGroup>
-                    <SelectItem value={AUTO_REFRESH_DISABLED_VALUE}>不自动刷新</SelectItem>
-                    <SelectItem value="60">60 秒刷新</SelectItem>
-                    <SelectItem value="30">30 秒刷新</SelectItem>
-                    <SelectItem value="10">10 秒刷新</SelectItem>
-                    <SelectItem value="5">5 秒刷新</SelectItem>
-                  </SelectGroup>
-                </SelectContent>
-              </Select>
+              <div className="grid grid-cols-2 gap-2 lg:grid-cols-4">
+                {renderFilterControls()}
+                {renderAutoRefreshControls("col-span-2 flex min-w-0 items-center gap-2 lg:col-span-1")}
+              </div>
             </div>
           </div>
 
@@ -1225,11 +1418,7 @@ function ImageManagerContent({
         {showImageEmptyState || showImageFilteredEmptyState ? (
           <Card className="overflow-hidden rounded-[20px]">
             <CardContent className="flex min-h-[320px] flex-col items-center justify-center gap-4 px-6 py-14 text-center">
-              <div className="grid aspect-[4/3] w-[min(320px,72vw)] place-items-center rounded-[24px] border border-dashed border-border bg-muted/60 shadow-[0_0_15px_rgba(44,30,116,0.10)]">
-                <div className="flex size-20 items-center justify-center rounded-[20px] bg-white text-[#1456f0] shadow-[0_8px_24px_rgba(24,40,72,0.07)]">
-                  <ImageIcon className="size-9" />
-                </div>
-              </div>
+
               <div className="space-y-1">
                 <p className="text-sm font-medium text-foreground">{showImageFilteredEmptyState ? "没有匹配的图片" : "暂无图片"}</p>
                 <p className="max-w-[32rem] text-sm leading-6 text-muted-foreground">
