@@ -191,7 +191,7 @@ func TestAppAuthAndSPACompatibility(t *testing.T) {
 		req := httptest.NewRequest(http.MethodGet, path, nil)
 		res := httptest.NewRecorder()
 		app.Handler().ServeHTTP(res, req)
-		if res.Code != http.StatusOK || !strings.Contains(res.Body.String(), "go-spa") {
+		if res.Code != http.StatusOK || !strings.Contains(res.Body.String(), `<div id="root"></div>`) {
 			t.Fatalf("%s status/body = %d %q", path, res.Code, res.Body.String())
 		}
 	}
@@ -239,7 +239,6 @@ func TestAdminSystemCheckUpdates(t *testing.T) {
 		APIBaseURL:     releaseAPI.URL,
 		CurrentVersion: version.Get(),
 		BuildType:      version.GetBuildType(),
-		WebDistDir:     filepath.Join(app.config.RootDir, "web_dist"),
 	})
 
 	req := httptest.NewRequest(http.MethodGet, "/api/admin/system/check-updates?force=true", nil)
@@ -1818,12 +1817,6 @@ func newTestApp(t *testing.T) *App {
 	unsetTestEnv(t, "CHATGPT2API_REGISTRATION_ENABLED")
 	t.Setenv("STORAGE_BACKEND", "json")
 	t.Setenv("DATABASE_URL", "")
-	if err := os.MkdirAll(filepath.Join(root, "web_dist", "assets"), 0o755); err != nil {
-		t.Fatalf("mkdir web_dist: %v", err)
-	}
-	if err := os.WriteFile(filepath.Join(root, "web_dist", "index.html"), []byte("<html>go-spa</html>"), 0o644); err != nil {
-		t.Fatalf("write index: %v", err)
-	}
 	app, err := NewApp()
 	if err != nil {
 		t.Fatalf("NewApp() error = %v", err)

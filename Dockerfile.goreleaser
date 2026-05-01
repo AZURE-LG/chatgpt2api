@@ -13,7 +13,6 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 
 COPY chatgpt2api /app/chatgpt2api
-COPY web_dist /app/web_dist
 
 RUN mkdir -p /app/data && chmod +x /app/chatgpt2api
 

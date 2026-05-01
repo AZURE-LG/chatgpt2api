@@ -38,7 +38,6 @@ type UpdateService struct {
 	githubToken    string
 	currentVersion string
 	buildType      string
-	webDistDir     string
 	httpClient     *http.Client
 	downloadClient *http.Client
 	cached         *UpdateInfo
@@ -51,7 +50,6 @@ type UpdateOptions struct {
 	GitHubToken    string
 	CurrentVersion string
 	BuildType      string
-	WebDistDir     string
 	ProxyURL       string
 }
 
@@ -113,7 +111,6 @@ func NewUpdateService(options UpdateOptions) *UpdateService {
 		githubToken:    strings.TrimSpace(options.GitHubToken),
 		currentVersion: strings.TrimSpace(options.CurrentVersion),
 		buildType:      buildType,
-		webDistDir:     strings.TrimSpace(options.WebDistDir),
 		httpClient:     HTTPClientForProxy(options.ProxyURL, 30*time.Second),
 		downloadClient: HTTPClientForProxy(options.ProxyURL, 10*time.Minute),
 	}
@@ -205,14 +202,7 @@ func (s *UpdateService) PerformUpdate(ctx context.Context) error {
 		return fmt.Errorf("chmod updated binary: %w", err)
 	}
 
-	newWebDistDir := ""
-	if strings.TrimSpace(s.webDistDir) != "" {
-		newWebDistDir, err = findExtractedWebDist(extractDir)
-		if err != nil {
-			return err
-		}
-	}
-	return replaceRuntimeFiles(exePath, newBinaryPath, s.webDistDir, newWebDistDir)
+	return replaceRuntimeFiles(exePath, newBinaryPath)
 }
 
 func (s *UpdateService) Rollback() error {
@@ -220,7 +210,7 @@ func (s *UpdateService) Rollback() error {
 	if err != nil {
 		return err
 	}
-	return rollbackRuntimeFiles(exePath, s.webDistDir)
+	return rollbackRuntimeFiles(exePath)
 }
 
 func (s *UpdateService) fetchLatestRelease(ctx context.Context) (*UpdateInfo, error) {
@@ -643,38 +633,9 @@ func findExtractedBinary(root string) (string, error) {
 	return found, nil
 }
 
-func findExtractedWebDist(root string) (string, error) {
-	var found string
-	err := filepath.WalkDir(root, func(path string, entry os.DirEntry, err error) error {
-		if err != nil {
-			return err
-		}
-		if !entry.IsDir() || entry.Name() != "web_dist" {
-			return nil
-		}
-		if _, statErr := os.Stat(filepath.Join(path, "index.html")); statErr == nil {
-			found = path
-			return filepath.SkipAll
-		}
-		return nil
-	})
-	if err != nil {
-		return "", err
-	}
-	if found == "" {
-		return "", errors.New("release archive does not contain web_dist/index.html")
-	}
-	return found, nil
-}
-
-func replaceRuntimeFiles(exePath, newBinaryPath, webDistDir, newWebDistDir string) error {
+func replaceRuntimeFiles(exePath, newBinaryPath string) error {
 	exeBackup := exePath + ".backup"
-	webBackup := webDistDir + ".backup"
 	_ = os.Remove(exeBackup)
-	if webDistDir != "" {
-		_ = os.RemoveAll(webBackup)
-	}
-
 	if err := os.Rename(exePath, exeBackup); err != nil {
 		return fmt.Errorf("backup executable: %w", err)
 	}
@@ -688,31 +649,10 @@ func replaceRuntimeFiles(exePath, newBinaryPath, webDistDir, newWebDistDir strin
 		return fmt.Errorf("replace executable: %w", err)
 	}
 	binaryReplaced = true
-
-	if webDistDir == "" {
-		return nil
-	}
-	webMoved := false
-	if info, err := os.Stat(webDistDir); err == nil && info.IsDir() {
-		if err := os.Rename(webDistDir, webBackup); err != nil {
-			_ = os.Rename(exePath, newBinaryPath)
-			_ = os.Rename(exeBackup, exePath)
-			return fmt.Errorf("backup web_dist: %w", err)
-		}
-		webMoved = true
-	}
-	if err := os.Rename(newWebDistDir, webDistDir); err != nil {
-		_ = os.Rename(exePath, newBinaryPath)
-		_ = os.Rename(exeBackup, exePath)
-		if webMoved {
-			_ = os.Rename(webBackup, webDistDir)
-		}
-		return fmt.Errorf("replace web_dist: %w", err)
-	}
 	return nil
 }
 
-func rollbackRuntimeFiles(exePath, webDistDir string) error {
+func rollbackRuntimeFiles(exePath string) error {
 	exeBackup := exePath + ".backup"
 	if _, err := os.Stat(exeBackup); err != nil {
 		if os.IsNotExist(err) {
@@ -730,26 +670,6 @@ func rollbackRuntimeFiles(exePath, webDistDir string) error {
 		return fmt.Errorf("restore executable backup: %w", err)
 	}
 	_ = os.Remove(currentBackup)
-
-	if webDistDir == "" {
-		return nil
-	}
-	webBackup := webDistDir + ".backup"
-	if info, err := os.Stat(webBackup); err != nil || !info.IsDir() {
-		return nil
-	}
-	currentWebBackup := webDistDir + ".rollback-current"
-	_ = os.RemoveAll(currentWebBackup)
-	if info, err := os.Stat(webDistDir); err == nil && info.IsDir() {
-		if err := os.Rename(webDistDir, currentWebBackup); err != nil {
-			return fmt.Errorf("backup current web_dist: %w", err)
-		}
-	}
-	if err := os.Rename(webBackup, webDistDir); err != nil {
-		_ = os.Rename(currentWebBackup, webDistDir)
-		return fmt.Errorf("restore web_dist backup: %w", err)
-	}
-	_ = os.RemoveAll(currentWebBackup)
 	return nil
 }
 

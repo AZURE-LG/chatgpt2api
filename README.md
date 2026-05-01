@@ -34,7 +34,7 @@
 ### 后端服务
 
 - Go 单体服务，容器内启动 `/app/chatgpt2api`。
-- 前端构建产物位于 `/app/web_dist`，由 Go 服务直接托管。
+- 前端构建产物嵌入 Go 二进制，由 Go 服务直接托管。
 - 支持 Docker / Docker Compose 部署。
 - 支持 SQLite、JSON 文件和 PostgreSQL 存储后端。
 - 支持全局 HTTP / HTTPS / SOCKS5 / SOCKS5H 代理。
@@ -229,13 +229,13 @@ Release 构建可以在设置页的“版本更新”卡片中检查和执行在
 3. 下载当前平台匹配的 Release 压缩包。
 4. 校验 `checksums.txt`。
 5. 替换当前 `chatgpt2api` 二进制。
-6. 替换 `web_dist` 前端产物。
-7. 保留 `.backup` 以支持回滚。
-8. 前端提示重启服务。
+6. 保留 `.backup` 以支持回滚。
+7. 前端提示重启服务。
 
 重要说明：
 
 - 在线更新只在 `BuildType=release` 的构建中开放。
+- 前端资源已嵌入 Release 二进制，在线更新只替换 `chatgpt2api` 这一个运行文件。
 - Docker 场景下，在线更新替换的是当前容器文件系统中的运行时文件，不会更新 Docker 镜像本身。
 - 如果重新创建容器，最终仍以镜像内容为准。长期稳定的 Docker 升级仍建议使用 `docker compose pull && docker compose up -d`。
 - 在线更新访问 GitHub 可通过 `CHATGPT2API_UPDATE_PROXY_URL` 配置代理；未设置时复用 `CHATGPT2API_PROXY`。
@@ -250,8 +250,10 @@ Release 构建可以在设置页的“版本更新”卡片中检查和执行在
 
 ```bash
 git pull
+bun install --cwd web --frozen-lockfile
+bun --cwd web run build
 go test ./...
-go build -ldflags "-X chatgpt2api/internal/version.Version=1.0.0" -o chatgpt2api ./cmd/chatgpt2api
+go build -tags=embed -ldflags "-X chatgpt2api/internal/version.Version=1.0.0" -o chatgpt2api ./cmd/chatgpt2api
 ```
 
 ## 配置说明
@@ -335,8 +337,10 @@ CHATGPT2API_LINUXDO_FRONTEND_REDIRECT_URL=/auth/linuxdo/callback
 ### 后端
 
 ```bash
+bun install --cwd web --frozen-lockfile
+bun --cwd web run build
 go test ./...
-go build -ldflags "-X chatgpt2api/internal/version.Version=0.0.0-dev" -o chatgpt2api ./cmd/chatgpt2api
+go build -tags=embed -ldflags "-X chatgpt2api/internal/version.Version=0.0.0-dev" -o chatgpt2api ./cmd/chatgpt2api
 CHATGPT2API_ADMIN_PASSWORD=change_me_please ./chatgpt2api
 ```
 
@@ -391,12 +395,13 @@ bun run build
 推送 `v*` 标签会触发 `.github/workflows/release.yml`：
 
 1. 构建前端。
-2. 上传 `web/dist` artifact。
-3. GoReleaser 构建 Linux `amd64` / `arm64` 二进制。
-4. 生成 GitHub Release archive 和 `checksums.txt`。
-5. 使用 `Dockerfile.goreleaser` 构建多架构 Docker 镜像。
-6. 推送 GHCR 镜像。
-7. 如果配置了 `DOCKERHUB_USERNAME` 和 `DOCKERHUB_TOKEN`，同步推送 DockerHub。
+2. 上传 `internal/web/dist` artifact。
+3. 将前端 artifact 下载到 `internal/web/dist`。
+4. GoReleaser 使用 `-tags=embed` 构建 Linux `amd64` / `arm64` 二进制。
+5. 生成 GitHub Release archive 和 `checksums.txt`。
+6. 使用 `Dockerfile.goreleaser` 构建多架构 Docker 镜像。
+7. 推送 GHCR 镜像。
+8. 如果配置了 `DOCKERHUB_USERNAME` 和 `DOCKERHUB_TOKEN`，同步推送 DockerHub。
 
 发布命令示例：
 

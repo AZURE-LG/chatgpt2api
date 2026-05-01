@@ -28,12 +28,13 @@ RUN --mount=type=cache,target=/go/pkg/mod,sharing=locked go mod download
 
 COPY cmd ./cmd
 COPY internal ./internal
+COPY --from=web-build /app/internal/web/dist ./internal/web/dist
 ARG TARGETOS
 ARG TARGETARCH
 ARG VERSION=0.0.0-dev
 RUN --mount=type=cache,target=/go/pkg/mod \
     --mount=type=cache,target=/root/.cache/go-build \
-    CGO_ENABLED=0 GOOS=${TARGETOS:-linux} GOARCH=${TARGETARCH:-amd64} go build -trimpath -ldflags="-s -w -X chatgpt2api/internal/version.Version=${VERSION}" -o /out/chatgpt2api ./cmd/chatgpt2api
+    CGO_ENABLED=0 GOOS=${TARGETOS:-linux} GOARCH=${TARGETARCH:-amd64} go build -trimpath -tags=embed -ldflags="-s -w -X chatgpt2api/internal/version.Version=${VERSION}" -o /out/chatgpt2api ./cmd/chatgpt2api
 
 
 FROM --platform=$TARGETPLATFORM debian:bookworm-slim AS app
@@ -52,7 +53,6 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 
 COPY --from=go-build /out/chatgpt2api ./chatgpt2api
-COPY --from=web-build /app/web/dist ./web_dist
 
 EXPOSE 80
 

@@ -55,7 +55,7 @@ func TestValidateUpdateDownloadURL(t *testing.T) {
 	}
 }
 
-func TestExtractUpdateArchiveFindsRuntimePayload(t *testing.T) {
+func TestExtractUpdateArchiveFindsEmbeddedRuntimePayload(t *testing.T) {
 	root := t.TempDir()
 	archivePath := filepath.Join(root, "chatgpt2api_1.2.3_linux_amd64.tar.gz")
 	if err := writeTestUpdateArchive(archivePath); err != nil {
@@ -72,23 +72,19 @@ func TestExtractUpdateArchiveFindsRuntimePayload(t *testing.T) {
 	if binary, err := findExtractedBinary(extractDir); err != nil || filepath.Base(binary) != wantBinaryName {
 		t.Fatalf("findExtractedBinary() = %q, %v", binary, err)
 	}
-	if webDist, err := findExtractedWebDist(extractDir); err != nil {
-		t.Fatalf("findExtractedWebDist() error = %v", err)
-	} else if _, err := os.Stat(filepath.Join(webDist, "index.html")); err != nil {
-		t.Fatalf("web_dist index missing: %v", err)
-	}
 }
 
-func TestGoReleaserArchiveIncludesWebDistRootFiles(t *testing.T) {
+func TestGoReleaserArchiveDoesNotShipWebDist(t *testing.T) {
 	data, err := os.ReadFile(filepath.Join("..", "..", ".goreleaser.yaml"))
 	if err != nil {
 		t.Fatalf("read .goreleaser.yaml: %v", err)
 	}
 	config := string(data)
-	for _, entry := range []string{"web_dist/*", "web_dist/**/*"} {
-		if !yamlListContains(config, entry) {
-			t.Fatalf(".goreleaser.yaml archive files missing %q", entry)
-		}
+	if strings.Contains(config, "web_dist") {
+		t.Fatal(".goreleaser.yaml must not ship runtime web_dist assets")
+	}
+	if !strings.Contains(config, "-tags=embed") {
+		t.Fatal(".goreleaser.yaml must build the binary with embedded frontend assets")
 	}
 }
 
@@ -239,9 +235,7 @@ func writeTestUpdateArchive(path string) error {
 	tw := tar.NewWriter(gz)
 	defer tw.Close()
 	for name, content := range map[string]string{
-		"chatgpt2api_1.2.3_linux_amd64/" + binaryName:        "binary",
-		"chatgpt2api_1.2.3_linux_amd64/web_dist/index.html":  "<html></html>",
-		"chatgpt2api_1.2.3_linux_amd64/web_dist/assets/a.js": "console.log(1)",
+		"chatgpt2api_1.2.3_linux_amd64/" + binaryName: "binary",
 	} {
 		if err := tw.WriteHeader(&tar.Header{Name: name, Mode: 0o644, Size: int64(len(content))}); err != nil {
 			return err

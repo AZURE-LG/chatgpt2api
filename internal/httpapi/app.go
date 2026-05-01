@@ -26,6 +26,7 @@ import (
 	"chatgpt2api/internal/storage"
 	"chatgpt2api/internal/util"
 	"chatgpt2api/internal/version"
+	frontend "chatgpt2api/internal/web"
 
 	_ "github.com/HugoSmits86/nativewebp"
 )
@@ -121,7 +122,6 @@ func newUpdateService(cfg *config.Store) *service.UpdateService {
 		CurrentVersion: version.Get(),
 		BuildType:      version.GetBuildType(),
 		Repo:           cfg.UpdateRepo(),
-		WebDistDir:     filepath.Join(cfg.RootDir, "web_dist"),
 		ProxyURL:       cfg.UpdateProxyURL(),
 		GitHubToken:    cfg.UpdateGitHubToken(),
 	})
@@ -1296,46 +1296,5 @@ func firstNonEmpty(values ...string) string {
 }
 
 func (a *App) serveWeb(w http.ResponseWriter, r *http.Request) {
-	webDist := filepath.Join(a.config.RootDir, "web_dist")
-	clean := strings.Trim(r.URL.Path, "/")
-	if asset := resolveWebAsset(webDist, clean); asset != "" {
-		http.ServeFile(w, r, asset)
-		return
-	}
-	last := clean
-	if idx := strings.LastIndex(last, "/"); idx >= 0 {
-		last = last[idx+1:]
-	}
-	if strings.HasPrefix(clean, "assets/") || strings.Contains(last, ".") {
-		http.NotFound(w, r)
-		return
-	}
-	if asset := resolveWebAsset(webDist, ""); asset != "" {
-		http.ServeFile(w, r, asset)
-		return
-	}
-	http.NotFound(w, r)
-}
-
-func resolveWebAsset(webDist, requested string) string {
-	if info, err := os.Stat(webDist); err != nil || !info.IsDir() {
-		return ""
-	}
-	base, _ := filepath.Abs(webDist)
-	var candidates []string
-	if requested == "" {
-		candidates = []string{filepath.Join(base, "index.html")}
-	} else {
-		candidates = []string{filepath.Join(base, filepath.FromSlash(requested)), filepath.Join(base, filepath.FromSlash(requested), "index.html"), filepath.Join(base, filepath.FromSlash(requested)+".html")}
-	}
-	for _, candidate := range candidates {
-		resolved, _ := filepath.Abs(candidate)
-		if !strings.HasPrefix(resolved, base) {
-			continue
-		}
-		if info, err := os.Stat(resolved); err == nil && !info.IsDir() {
-			return resolved
-		}
-	}
-	return ""
+	frontend.Handler().ServeHTTP(w, r)
 }
