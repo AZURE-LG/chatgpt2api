@@ -92,7 +92,10 @@ export function VersionUpdateCard({
   const hasUpdate = Boolean(updateInfo?.has_update);
   const hasWarning = Boolean(updateInfo?.warning);
   const isBusy = operation !== "idle";
-  const updateRepo = String(config?.update_repo || "ZyphrZero/chatgpt2api");
+  const updateRepo =
+    typeof config?.update_repo === "string"
+      ? config.update_repo
+      : "ZyphrZero/chatgpt2api";
   const updateGitHubToken = String(config?.update_github_token || "");
   const updateGitHubTokenConfigured = Boolean(
     config?.update_github_token_configured,
@@ -274,7 +277,7 @@ export function VersionUpdateCard({
                 placeholder={
                   updateGitHubTokenConfigured
                     ? "已配置，留空则保留当前 Token"
-                    : "github_pat_xxx"
+                    : "ghp_xxxxxxxxxxxxxxxxxxxxx"
                 }
                 disabled={!canManageSystem || isSavingConfig}
                 className="font-mono text-sm"

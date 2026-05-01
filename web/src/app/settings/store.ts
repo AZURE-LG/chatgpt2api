@@ -279,7 +279,7 @@ export const useSettingsStore = create<SettingsStore>((set, get) => ({
         linuxdo_client_secret: linuxDoClientSecret,
         linuxdo_redirect_url: String(config.linuxdo_redirect_url || "").trim(),
         linuxdo_frontend_redirect_url: String(config.linuxdo_frontend_redirect_url || "").trim(),
-        update_repo: String(config.update_repo || "ZyphrZero/chatgpt2api").trim(),
+        update_repo: String(config.update_repo ?? "ZyphrZero/chatgpt2api").trim(),
         update_github_token: updateGitHubToken,
       };
       if (!linuxDoClientSecret) {
