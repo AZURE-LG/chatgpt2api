@@ -214,6 +214,35 @@ export type LogCleanupResult = {
   remaining: number;
 };
 
+export type ReleaseAsset = {
+  name: string;
+  download_url: string;
+  size: number;
+};
+
+export type ReleaseInfo = {
+  name: string;
+  body: string;
+  published_at: string;
+  html_url: string;
+  assets: ReleaseAsset[];
+};
+
+export type SystemUpdateInfo = {
+  current_version: string;
+  latest_version: string;
+  has_update: boolean;
+  release_info?: ReleaseInfo;
+  cached: boolean;
+  warning?: string;
+  build_type: string;
+};
+
+export type SystemUpdateResult = {
+  message: string;
+  need_restart: boolean;
+};
+
 export type ImageResponse = {
   created: number;
   data: Array<{ b64_json?: string; url?: string; revised_prompt?: string }>;
@@ -766,6 +795,35 @@ export async function cleanupLogs(retentionDays: number) {
   return httpRequest<{ cleanup: LogCleanupResult; governance: LogGovernanceSummary }>("/api/logs/governance", {
     method: "POST",
     body: { retention_days: retentionDays },
+  });
+}
+
+export async function checkSystemUpdates(force = false) {
+  const params = new URLSearchParams();
+  if (force) {
+    params.set("force", "true");
+  }
+  return httpRequest<SystemUpdateInfo>(`/api/admin/system/check-updates${params.toString() ? `?${params.toString()}` : ""}`);
+}
+
+export async function performSystemUpdate() {
+  return httpRequest<SystemUpdateResult>("/api/admin/system/update", {
+    method: "POST",
+    body: {},
+  });
+}
+
+export async function rollbackSystemUpdate() {
+  return httpRequest<SystemUpdateResult>("/api/admin/system/rollback", {
+    method: "POST",
+    body: {},
+  });
+}
+
+export async function restartSystemService() {
+  return httpRequest<{ message: string }>("/api/admin/system/restart", {
+    method: "POST",
+    body: {},
   });
 }
 

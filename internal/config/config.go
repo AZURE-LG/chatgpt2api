@@ -233,6 +233,13 @@ func (s *Store) Proxy() string {
 	return strings.TrimSpace(fmt.Sprint(s.settingValue("proxy", "")))
 }
 
+func (s *Store) UpdateProxyURL() string {
+	if value := strings.TrimSpace(os.Getenv("CHATGPT2API_UPDATE_PROXY_URL")); value != "" {
+		return value
+	}
+	return s.Proxy()
+}
+
 func (s *Store) LogLevels() []string {
 	raw := s.settingValue("log_levels", "")
 	var parts []string

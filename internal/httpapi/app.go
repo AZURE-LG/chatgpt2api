@@ -51,6 +51,7 @@ type App struct {
 	sub2       *service.Sub2APIConfig
 	sub2Import *service.Sub2APIService
 	register   *service.RegisterService
+	update     *service.UpdateService
 	cancel     context.CancelFunc
 }
 
@@ -84,7 +85,7 @@ func NewApp() (*App, error) {
 	}
 	documentStore, _ := storageBackend.(storage.JSONDocumentBackend)
 	engine := &protocol.Engine{Accounts: accounts, Config: cfg, Storage: documentStore, Proxy: proxy, Logger: logger}
-	app := &App{config: cfg, auth: auth, accounts: accounts, logs: logs, logger: logger, proxy: proxy, engine: engine, images: service.NewImageService(cfg, storageBackend), announce: service.NewAnnouncementService(cfg.DataDir, storageBackend), cpa: service.NewCPAConfig(cfg.DataDir, storageBackend), sub2: service.NewSub2APIConfig(cfg.DataDir, storageBackend), cancel: cancel}
+	app := &App{config: cfg, auth: auth, accounts: accounts, logs: logs, logger: logger, proxy: proxy, engine: engine, images: service.NewImageService(cfg, storageBackend), announce: service.NewAnnouncementService(cfg.DataDir, storageBackend), cpa: service.NewCPAConfig(cfg.DataDir, storageBackend), sub2: service.NewSub2APIConfig(cfg.DataDir, storageBackend), update: service.NewUpdateService(service.UpdateOptions{CurrentVersion: version.Get(), BuildType: version.GetBuildType(), WebDistDir: filepath.Join(cfg.RootDir, "web_dist"), ProxyURL: cfg.UpdateProxyURL()}), cancel: cancel}
 	app.cpaImport = service.NewCPAImportService(app.cpa, accounts, proxy)
 	app.sub2Import = service.NewSub2APIService(app.sub2, accounts)
 	app.register = service.NewRegisterService(cfg.DataDir, accounts, storageBackend)

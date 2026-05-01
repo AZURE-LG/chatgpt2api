@@ -4,7 +4,11 @@ import "testing"
 
 func TestGet(t *testing.T) {
 	original := Version
-	t.Cleanup(func() { Version = original })
+	originalBuildType := BuildType
+	t.Cleanup(func() {
+		Version = original
+		BuildType = originalBuildType
+	})
 
 	tests := []struct {
 		name string
@@ -23,5 +27,14 @@ func TestGet(t *testing.T) {
 				t.Fatalf("Get() = %q, want %q", got, tt.want)
 			}
 		})
+	}
+
+	BuildType = " release "
+	if got := GetBuildType(); got != "release" {
+		t.Fatalf("GetBuildType() = %q, want release", got)
+	}
+	BuildType = ""
+	if got := GetBuildType(); got != "source" {
+		t.Fatalf("GetBuildType() = %q, want source", got)
 	}
 }

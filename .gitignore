@@ -3,6 +3,7 @@ build/
 dist/
 web_dist
 chatgpt2api.exe
+.omx/
 
 .idea
 node_modules/
