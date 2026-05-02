@@ -96,7 +96,7 @@ docker compose up -d
 默认 Compose 配置：
 
 - 镜像：`ghcr.io/zyphrzero/chatgpt2api:latest`
-- 端口：宿主机 `3000` -> 容器 `80`
+- 端口：宿主机 `6969` -> 容器 `80`
 - 数据目录：`./data:/app/data`
 - 环境文件：`./.env:/app/.env`
 - 重启策略：`restart: unless-stopped`
@@ -104,7 +104,7 @@ docker compose up -d
 访问：
 
 ```text
-http://localhost:3000
+http://localhost:6969
 ```
 
 查看日志：
@@ -262,13 +262,13 @@ CHATGPT2API_ADMIN_PASSWORD=change_me_please ./chatgpt2api
 后端默认监听：
 
 ```text
-http://127.0.0.1:8000
+http://127.0.0.1:6969
 ```
 
 也可以通过 `PORT` 指定端口：
 
 ```bash
-PORT=8000 ./chatgpt2api
+PORT=6969 ./chatgpt2api
 ```
 
 ### 前端
@@ -279,10 +279,16 @@ bun install
 bun run dev
 ```
 
+前端开发服务器默认监听：
+
+```text
+http://127.0.0.1:6868
+```
+
 前端开发服务器默认会通过 `VITE_API_URL` 访问后端。未设置时，开发模式默认使用：
 
 ```text
-http://127.0.0.1:8000
+http://127.0.0.1:6969
 ```
 
 前端验证命令：
@@ -382,7 +388,7 @@ Authorization: Bearer <session-or-api-token>
 ### `GET /v1/models`
 
 ```bash
-curl http://localhost:3000/v1/models \
+curl http://localhost:6969/v1/models \
   -H "Authorization: Bearer <session-or-api-token>"
 ```
 
@@ -405,7 +411,7 @@ gpt-5.5
 ### `POST /v1/images/generations`
 
 ```bash
-curl http://localhost:3000/v1/images/generations \
+curl http://localhost:6969/v1/images/generations \
   -H "Content-Type: application/json" \
   -H "Authorization: Bearer <session-or-api-token>" \
   -d '{
@@ -428,7 +434,7 @@ curl http://localhost:3000/v1/images/generations \
 ### `POST /v1/images/edits`
 
 ```bash
-curl http://localhost:3000/v1/images/edits \
+curl http://localhost:6969/v1/images/edits \
   -H "Authorization: Bearer <session-or-api-token>" \
   -F "model=auto" \
   -F "prompt=把这张图改成赛博朋克夜景风格" \
@@ -450,7 +456,7 @@ curl http://localhost:3000/v1/images/edits \
 该接口面向图片场景，不是完整通用聊天代理。
 
 ```bash
-curl http://localhost:3000/v1/chat/completions \
+curl http://localhost:6969/v1/chat/completions \
   -H "Content-Type: application/json" \
   -H "Authorization: Bearer <session-or-api-token>" \
   -d '{
@@ -471,7 +477,7 @@ curl http://localhost:3000/v1/chat/completions \
 该接口面向图片生成工具调用场景，不是完整通用 Responses API 代理。
 
 ```bash
-curl http://localhost:3000/v1/responses \
+curl http://localhost:6969/v1/responses \
   -H "Content-Type: application/json" \
   -H "Authorization: Bearer <session-or-api-token>" \
   -d '{

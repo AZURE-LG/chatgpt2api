@@ -197,6 +197,33 @@
     display: none;
   }
 
+  .soft-scrollbar {
+    scrollbar-color: color-mix(in srgb, var(--muted-foreground) 34%, transparent) transparent;
+    scrollbar-gutter: stable;
+    scrollbar-width: thin;
+  }
+
+  .soft-scrollbar::-webkit-scrollbar {
+    height: 8px;
+    width: 8px;
+  }
+
+  .soft-scrollbar::-webkit-scrollbar-track {
+    background: transparent;
+  }
+
+  .soft-scrollbar::-webkit-scrollbar-thumb {
+    background: color-mix(in srgb, var(--muted-foreground) 30%, transparent);
+    background-clip: content-box;
+    border: 2px solid transparent;
+    border-radius: 999px;
+  }
+
+  .soft-scrollbar:hover::-webkit-scrollbar-thumb {
+    background: color-mix(in srgb, var(--muted-foreground) 48%, transparent);
+    background-clip: content-box;
+  }
+
   .dark .bg-white,
   .dark .bg-stone-50,
   .dark .bg-\[\#ffffff\] {

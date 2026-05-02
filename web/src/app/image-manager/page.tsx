@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Check, Copy, Download, Eye, Globe2, ImageIcon, Library, LoaderCircle, Lock, MoreHorizontal, Pencil, RefreshCw, Save, Search, Send, Trash2, X } from "lucide-react";
+import { Check, ChevronDown, Copy, Download, Eye, Globe2, ImageIcon, Library, LoaderCircle, Lock, MoreHorizontal, Pencil, RefreshCw, Save, Search, Send, Trash2, X } from "lucide-react";
 import { useNavigate } from "react-router-dom";
 import { toast } from "sonner";
 
@@ -22,6 +22,7 @@ import { Input } from "@/components/ui/input";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Select, SelectContent, SelectGroup, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Textarea } from "@/components/ui/textarea";
+import { copyTextToClipboard } from "@/lib/clipboard";
 import {
   deleteManagedImages,
   fetchManagedImages,
@@ -162,6 +163,38 @@ function formatManagedImageDateLabel(value?: string) {
   }).format(date);
 }
 
+function formatManagedImageDateTimeLabel(value?: string) {
+  if (!value) {
+    return "";
+  }
+  const normalized = value.includes("T") ? value : value.replace(" ", "T");
+  const date = new Date(normalized);
+  if (Number.isNaN(date.getTime())) {
+    return value;
+  }
+  const parts = Object.fromEntries(
+    new Intl.DateTimeFormat("zh-CN", {
+      year: "numeric",
+      month: "2-digit",
+      day: "2-digit",
+      hour: "2-digit",
+      minute: "2-digit",
+      hourCycle: "h23",
+    })
+      .formatToParts(date)
+      .map((part) => [part.type, part.value]),
+  );
+  return `${parts.year}-${parts.month}-${parts.day} ${parts.hour}:${parts.minute}`;
+}
+
+function formatManagedImageDimensions(item: ManagedImage) {
+  return item.width && item.height ? `${item.width} x ${item.height}` : "";
+}
+
+function formatManagedImageFileSizeLabel(size: number) {
+  return Number.isFinite(size) && size > 0 ? formatImageFileSize(size) : "";
+}
+
 function managedImageFileBaseName(item: ManagedImage) {
   const sourceName = item.name || item.path.split("/").filter(Boolean).pop() || "";
   return sourceName.replace(/\.[a-z0-9]+$/i, "");
@@ -170,14 +203,14 @@ function managedImageFileBaseName(item: ManagedImage) {
 function buildPromptTitleFromImage(item: ManagedImage) {
   const promptTitle = compactTitleText(imagePromptValue(item));
   if (promptTitle) {
-    return `图片提示词：${promptTitle}`;
+    return promptTitle;
   }
 
   const parts = [item.model, formatManagedImageDateLabel(item.created_at)].filter(Boolean);
   if (parts.length > 0) {
-    return `图片提示词：${parts.join(" · ")}`;
+    return parts.join(" · ");
   }
-  return "图片提示词";
+  return compactTitleText(managedImageFileBaseName(item), 34) || "未命名提示词";
 }
 
 function buildManagedImageDisplayTitle(item: ManagedImage) {
@@ -250,10 +283,10 @@ function blurFocusedElementInContainer(container: HTMLElement) {
   }
 }
 
-function ImageDetailField({ label, value }: { label: string; value?: string | number | null }) {
+function ImageDetailField({ label, value, className = "" }: { label: string; value?: string | number | null; className?: string }) {
   const displayValue = value === undefined || value === null || value === "" ? "未记录" : String(value);
   return (
-    <div className="min-w-0 rounded-xl bg-muted/55 px-3 py-2">
+    <div className={`min-w-0 rounded-xl bg-muted/55 px-3 py-2 ${className}`}>
       <div className="text-[11px] font-medium text-muted-foreground">{label}</div>
       <div className="mt-1 break-words text-sm font-medium text-foreground">{displayValue}</div>
     </div>
@@ -273,16 +306,16 @@ function PromptCopyBox({
 }) {
   const text = value?.trim() || "";
   return (
-    <div>
+    <div className="space-y-1.5">
       <div className="mb-1.5 text-xs font-medium text-muted-foreground">{label}</div>
-      <div className="group relative rounded-xl bg-muted/70 p-3 pr-10 text-sm leading-6 text-foreground">
-        <div className="max-h-36 overflow-y-auto whitespace-pre-wrap break-words">
+      <div className="group relative rounded-xl border border-border/70 bg-muted/55 p-3.5 text-sm leading-6 text-foreground">
+        <div className={`soft-scrollbar max-h-44 overflow-y-auto whitespace-pre-wrap break-words pr-3 ${text ? "" : "text-muted-foreground"}`}>
           {text || emptyLabel}
         </div>
         {text ? (
           <button
             type="button"
-            className="absolute top-2 right-2 inline-flex size-7 items-center justify-center rounded-full bg-background text-muted-foreground opacity-0 shadow-sm transition hover:text-foreground group-hover:opacity-100 focus-visible:opacity-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+            className="absolute top-2.5 right-2.5 z-10 inline-flex size-7 items-center justify-center rounded-full border border-border bg-background/95 text-muted-foreground opacity-0 shadow-sm backdrop-blur transition hover:text-foreground group-hover:opacity-100 focus-visible:opacity-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
             onClick={() => void onCopy(text, label)}
             aria-label={`复制${label}`}
             title={`复制${label}`}
@@ -310,6 +343,7 @@ function ImageDetailDialog({
   onCopyImageUrl,
   onDownload,
   onOpenOriginal,
+  onImageLoad,
   onEditManualPrompt,
   onSavePrompt,
   onApplyPrompt,
@@ -331,6 +365,7 @@ function ImageDetailDialog({
   onCopyImageUrl: (item: ManagedImage) => void | Promise<void>;
   onDownload: (item: ManagedImage) => void | Promise<void>;
   onOpenOriginal: (item: ManagedImage) => void;
+  onImageLoad: (item: ManagedImage, width: number, height: number) => void;
   onEditManualPrompt: (item: ManagedImage) => void;
   onSavePrompt: (item: ManagedImage) => void | Promise<void>;
   onApplyPrompt: (item: ManagedImage) => void;
@@ -343,8 +378,10 @@ function ImageDetailDialog({
   }
 
   const promptText = imagePromptValue(item);
-  const dimensions = item.width && item.height ? `${item.width} x ${item.height}` : "";
-  const sizeLabel = formatImageFileSize(item.size);
+  const dimensions = formatManagedImageDimensions(item);
+  const sizeLabel = formatManagedImageFileSizeLabel(item.size);
+  const createdAtLabel = formatManagedImageDateTimeLabel(item.created_at);
+  const publishedAtLabel = formatManagedImageDateTimeLabel(item.published_at);
   const isVisibilityMutating = visibilityMutatingPath === item.path;
   const isPromptMutating = promptMetadataMutatingPath === item.path;
   const title = buildManagedImageDisplayTitle(item);
@@ -355,12 +392,22 @@ function ImageDetailDialog({
       <DialogContent className="flex h-[min(90dvh,820px)] w-[min(96vw,1080px)] max-w-none flex-col overflow-hidden rounded-[28px] p-0">
         <div className="grid min-h-0 flex-1 grid-cols-1 md:grid-cols-[minmax(0,1.15fr)_minmax(360px,0.85fr)]">
           <div className="relative h-[46dvh] min-h-[280px] bg-[#111318] md:h-auto md:min-h-0">
-            <img
-              src={item.url}
-              alt={item.name}
-              className="absolute inset-0 h-full w-full object-contain p-4 md:p-6"
-            />
-            <div className="absolute top-3 left-3 flex flex-wrap gap-2">
+            <button
+              type="button"
+              onClick={() => onOpenOriginal(item)}
+              className="absolute inset-0 cursor-zoom-in text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white/80 focus-visible:ring-offset-2 focus-visible:ring-offset-[#111318]"
+              aria-label="查看原图"
+            >
+              <img
+                src={item.url}
+                alt={item.name}
+                className="absolute inset-0 h-full w-full object-contain p-4 md:p-6"
+                onLoad={(event) => {
+                  onImageLoad(item, event.currentTarget.naturalWidth, event.currentTarget.naturalHeight);
+                }}
+              />
+            </button>
+            <div className="absolute top-3 left-3 z-10 flex flex-wrap gap-2">
               <button
                 type="button"
                 onClick={() => onOpenOriginal(item)}
@@ -389,8 +436,8 @@ function ImageDetailDialog({
             </div>
           </div>
 
-          <div className="min-h-0 overflow-y-auto border-l border-border bg-background p-5">
-            <DialogHeader className="gap-2 text-left">
+          <div className="flex min-h-0 flex-col border-l border-border bg-background">
+            <DialogHeader className="gap-2 px-5 pt-5 pr-14 pb-4 text-left">
               <div className="flex items-start justify-between gap-3">
                 <div className="min-w-0">
                   <DialogTitle className="line-clamp-2 text-lg leading-6">{title}</DialogTitle>
@@ -404,57 +451,62 @@ function ImageDetailDialog({
               </div>
             </DialogHeader>
 
-            <div className="mt-5 space-y-5">
-              <section className="space-y-2">
-                <div className="text-sm font-semibold text-foreground">图片信息</div>
-                <div className="grid grid-cols-2 gap-2">
-                  <ImageDetailField label="作者" value={imageOwnerLabel(item)} />
-                  <ImageDetailField label="文件名" value={fileName} />
-                  <ImageDetailField label="格式" value={getManagedImageFormatLabel(item)} />
-                  <ImageDetailField label="尺寸" value={dimensions} />
-                  <ImageDetailField label="大小" value={sizeLabel} />
-                  <ImageDetailField label="模型" value={item.model} />
-                  <ImageDetailField label="质量" value={item.quality} />
-                  <ImageDetailField label="模式" value={item.mode} />
-                  <ImageDetailField label="生成尺寸" value={item.image_size} />
-                  <ImageDetailField label="创建时间" value={item.created_at} />
-                  <ImageDetailField label="发布日期" value={item.published_at} />
-                </div>
-              </section>
-
-              <section className="space-y-3">
-                <div className="flex items-center justify-between gap-2">
-                  <div className="flex items-center gap-2 text-sm font-semibold text-foreground">
-                    <Library className="size-4" />
-                    提示词
+            <div className="soft-scrollbar min-h-0 flex-1 overflow-y-auto px-5 pb-5">
+              <div className="space-y-5">
+                <section className="space-y-2">
+                  <div className="text-sm font-semibold text-foreground">图片信息</div>
+                  <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
+                    <ImageDetailField label="作者" value={imageOwnerLabel(item)} />
+                    <ImageDetailField label="文件名" value={fileName} className="sm:col-span-2" />
+                    <ImageDetailField label="格式" value={getManagedImageFormatLabel(item)} />
+                    <ImageDetailField label="尺寸" value={dimensions} />
+                    <ImageDetailField label="大小" value={sizeLabel} />
+                    <ImageDetailField label="模型" value={item.model} />
+                    <ImageDetailField label="质量" value={item.quality} />
+                    <ImageDetailField label="模式" value={item.mode} />
+                    <ImageDetailField label="生成尺寸" value={item.image_size || dimensions} />
+                    <ImageDetailField label="创建时间" value={createdAtLabel} />
+                    <ImageDetailField label="发布日期" value={publishedAtLabel} />
                   </div>
-                  <Button
-                    type="button"
-                    size="sm"
-                    variant="outline"
-                    className="h-8 rounded-full"
-                    onClick={() => onEditManualPrompt(item)}
-                    disabled={!canEditPromptMetadata || promptMetadataMutatingPath !== null}
-                  >
-                    <Pencil className="size-3.5" />
-                    手动提示词
-                  </Button>
-                </div>
-                <PromptCopyBox label="原始提示词" value={item.prompt} emptyLabel="未记录" onCopy={onCopyPrompt} />
-                <PromptCopyBox label="手动提示词" value={item.manual_prompt} emptyLabel="未填写" onCopy={onCopyPrompt} />
-              </section>
+                </section>
 
-              <section className="space-y-2">
-                <div className="text-sm font-semibold text-foreground">关联信息</div>
-                <div className="grid gap-2">
-                  <ImageDetailField label="任务 ID" value={item.task_id} />
-                  <ImageDetailField label="会话 ID" value={item.conversation_id} />
-                  <ImageDetailField label="轮次 ID" value={item.turn_id} />
-                </div>
-              </section>
+                <section className="space-y-3">
+                  <div className="flex items-center justify-between gap-2">
+                    <div className="flex items-center gap-2 text-sm font-semibold text-foreground">
+                      <Library className="size-4" />
+                      提示词
+                    </div>
+                    <Button
+                      type="button"
+                      size="sm"
+                      variant="outline"
+                      className="h-8 rounded-full"
+                      onClick={() => onEditManualPrompt(item)}
+                      disabled={!canEditPromptMetadata || promptMetadataMutatingPath !== null}
+                    >
+                      <Pencil className="size-3.5" />
+                      手动提示词
+                    </Button>
+                  </div>
+                  <PromptCopyBox label="原始提示词" value={item.prompt} emptyLabel="未记录" onCopy={onCopyPrompt} />
+                  <PromptCopyBox label="手动提示词" value={item.manual_prompt} emptyLabel="未填写" onCopy={onCopyPrompt} />
+                </section>
+
+                <details className="group overflow-hidden rounded-xl border border-border bg-muted/30">
+                  <summary className="flex cursor-pointer list-none items-center justify-between gap-3 px-3 py-2.5 text-sm font-semibold text-foreground transition hover:bg-muted/50 [&::-webkit-details-marker]:hidden">
+                    <span>关联信息</span>
+                    <ChevronDown className="size-4 text-muted-foreground transition group-open:rotate-180" />
+                  </summary>
+                  <div className="grid gap-2 border-t border-border px-3 py-3">
+                    <ImageDetailField label="任务 ID" value={item.task_id} />
+                    <ImageDetailField label="会话 ID" value={item.conversation_id} />
+                    <ImageDetailField label="轮次 ID" value={item.turn_id} />
+                  </div>
+                </details>
+              </div>
             </div>
 
-            <DialogFooter className="mt-6 flex-col gap-2 border-t border-border pt-4 sm:flex-col">
+            <DialogFooter className="flex-col gap-2 border-t border-border px-5 py-4 sm:flex-col">
               <div className="grid w-full grid-cols-2 gap-2">
                 {canUpdateVisibility ? (
                   <Button
@@ -647,8 +699,8 @@ function ImageManagerContent({
       filteredItems.map((item) => ({
         id: item.name,
         src: item.url,
-        sizeLabel: formatImageFileSize(item.size),
-        dimensions: item.width && item.height ? `${item.width} x ${item.height}` : undefined,
+        sizeLabel: formatManagedImageFileSizeLabel(item.size),
+        dimensions: formatManagedImageDimensions(item) || undefined,
       })),
     [filteredItems],
   );
@@ -864,6 +916,30 @@ function ImageManagerContent({
     }));
   };
 
+  const updateManagedImageDimensions = useCallback((path: string, width: number, height: number) => {
+    if (!Number.isFinite(width) || !Number.isFinite(height) || width <= 0 || height <= 0) {
+      return;
+    }
+    setItems((current) => {
+      let changed = false;
+      const next = current.map((item) => {
+        if (item.path !== path) {
+          return item;
+        }
+        if (item.width === width && item.height === height) {
+          return item;
+        }
+        changed = true;
+        return { ...item, width, height };
+      });
+      if (!changed) {
+        return current;
+      }
+      updateImageManagerCache(currentCacheKey, next);
+      return next;
+    });
+  }, [currentCacheKey]);
+
   const toggleAllImages = () => {
     if (allSelected) {
       setSelectedImageIds({});
@@ -1001,7 +1077,7 @@ function ImageManagerContent({
       return;
     }
     try {
-      await navigator.clipboard.writeText(text);
+      await copyTextToClipboard(text);
       toast.success(`${label}已复制`);
     } catch {
       toast.error("复制失败");
@@ -1072,8 +1148,13 @@ function ImageManagerContent({
   };
 
   const handleCopyImageUrl = async (item: ManagedImage) => {
+    const url = item.url.trim();
+    if (!url) {
+      toast.error("图片地址为空");
+      return;
+    }
     try {
-      await navigator.clipboard.writeText(item.url);
+      await copyTextToClipboard(url);
       toast.success("图片地址已复制");
     } catch {
       toast.error("复制失败");
@@ -1518,8 +1599,8 @@ function ImageManagerContent({
                 const imageKey = managedImageKey(item);
                 const selected = Boolean(selectedImageIds[imageKey]);
                 const focused = focusedImagePath === imageKey;
-                const dimensions = item.width && item.height ? `${item.width} x ${item.height}` : "";
-                const sizeLabel = formatImageFileSize(item.size);
+                const dimensions = formatManagedImageDimensions(item);
+                const sizeLabel = formatManagedImageFileSizeLabel(item.size);
                 const imageMeta = [dimensions, sizeLabel].filter(Boolean).join(" | ");
                 const ownerLabel = imageOwnerLabel(item);
                 const canUpdateVisibility = galleryView === "mine";
@@ -1563,6 +1644,15 @@ function ImageManagerContent({
                         decoding="async"
                         sizes="(min-width: 1280px) 25vw, (min-width: 1024px) 33vw, (min-width: 640px) 50vw, 100vw"
                         className="block h-auto w-full transition duration-200 group-hover:brightness-95"
+                        onLoad={(event) => {
+                          if (!item.thumbnail_url) {
+                            updateManagedImageDimensions(
+                              item.path,
+                              event.currentTarget.naturalWidth,
+                              event.currentTarget.naturalHeight,
+                            );
+                          }
+                        }}
                       />
                     </button>
                     <button
@@ -1750,6 +1840,7 @@ function ImageManagerContent({
         onCopyImageUrl={handleCopyImageUrl}
         onDownload={(item) => downloadItems(`detail:${item.path}`, [item])}
         onOpenOriginal={handleOpenOriginalImage}
+        onImageLoad={(item, width, height) => updateManagedImageDimensions(item.path, width, height)}
         onEditManualPrompt={(item) => setManualPromptTarget({ item, value: item.manual_prompt || "" })}
         onSavePrompt={handleSaveImagePromptToLibrary}
         onApplyPrompt={handleApplyImagePrompt}

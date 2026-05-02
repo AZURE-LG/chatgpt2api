@@ -123,7 +123,7 @@ func TestStoreUpdatePersistsLinuxDoSettingsWithoutLeakingSecret(t *testing.T) {
 		"linuxdo_client_id":             "client-id",
 		"linuxdo_client_secret":         "client-secret",
 		"linuxdo_redirect_url":          "https://example.test/auth/linuxdo/oauth/callback",
-		"linuxdo_frontend_redirect_url": "http://127.0.0.1:5173/auth/linuxdo/callback",
+		"linuxdo_frontend_redirect_url": "http://127.0.0.1:6868/auth/linuxdo/callback",
 	})
 	if err != nil {
 		t.Fatalf("Update() error = %v", err)
@@ -133,7 +133,7 @@ func TestStoreUpdatePersistsLinuxDoSettingsWithoutLeakingSecret(t *testing.T) {
 	assertConfigValue(t, got, "linuxdo_client_id", "client-id")
 	assertConfigValue(t, got, "linuxdo_client_secret_configured", true)
 	assertConfigValue(t, got, "linuxdo_redirect_url", "https://example.test/auth/linuxdo/oauth/callback")
-	assertConfigValue(t, got, "linuxdo_frontend_redirect_url", "http://127.0.0.1:5173/auth/linuxdo/callback")
+	assertConfigValue(t, got, "linuxdo_frontend_redirect_url", "http://127.0.0.1:6868/auth/linuxdo/callback")
 	if _, ok := got["linuxdo_client_secret"]; ok {
 		t.Fatalf("Get() leaked linuxdo_client_secret: %#v", got)
 	}
@@ -150,7 +150,7 @@ func TestStoreUpdatePersistsLinuxDoSettingsWithoutLeakingSecret(t *testing.T) {
 		"CHATGPT2API_LINUXDO_ENABLED=true",
 		"CHATGPT2API_LINUXDO_CLIENT_ID=client-id",
 		"CHATGPT2API_LINUXDO_CLIENT_SECRET=client-secret",
-		"CHATGPT2API_LINUXDO_FRONTEND_REDIRECT_URL=http://127.0.0.1:5173/auth/linuxdo/callback",
+		"CHATGPT2API_LINUXDO_FRONTEND_REDIRECT_URL=http://127.0.0.1:6868/auth/linuxdo/callback",
 		"CHATGPT2API_LINUXDO_REDIRECT_URL=https://example.test/auth/linuxdo/oauth/callback",
 	} {
 		if !strings.Contains(envText, want) {

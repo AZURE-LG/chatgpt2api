@@ -64,8 +64,9 @@ import {
   type CreationTaskMessage,
   type ImageVisibility,
 } from "@/lib/api";
+import webConfig from "@/constants/common-env";
 import { clearImageManagerCache } from "@/lib/image-manager-cache";
-import { getManagedImagePathFromUrl } from "@/lib/image-path";
+import { buildManagedImageUrlFromPath, getManagedImagePathFromUrl } from "@/lib/image-path";
 import {
   fetchConversationAttachmentFile,
   fetchPrompts,
@@ -201,15 +202,25 @@ async function referenceImageToFile(image: StoredReferenceImage, index: number, 
   return fetchImageAsFile(source, fileName);
 }
 
+function persistentStoredImageUrl(image: StoredImage) {
+  const managedPath = image.path || (image.url ? getManagedImagePathFromUrl(image.url) : "");
+  if (managedPath) {
+    return buildManagedImageUrlFromPath(managedPath, webConfig.apiUrl);
+  }
+  return image.url || "";
+}
+
 function buildReferenceImageFromResult(image: StoredImage, fileName: string): StoredReferenceImage | null {
   if (!image.b64_json) {
     return null;
   }
 
+  const url = persistentStoredImageUrl(image);
   return {
     name: fileName,
     type: "image/png",
     dataUrl: `data:image/png;base64,${image.b64_json}`,
+    url,
   };
 }
 
@@ -265,15 +276,17 @@ async function buildReferenceImageFromStoredImage(image: StoredImage, fileName: 
     };
   }
 
-  if (!image.url) {
+  const url = persistentStoredImageUrl(image);
+  if (!url) {
     return null;
   }
-  const file = await fetchImageAsFile(image.url, fileName);
+  const file = await fetchImageAsFile(url, fileName);
   return {
     referenceImage: {
       name: file.name,
       type: file.type || "image/png",
       dataUrl: await readFileAsDataUrl(file),
+      url,
     },
     file,
   };

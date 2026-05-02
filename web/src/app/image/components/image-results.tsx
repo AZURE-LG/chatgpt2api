@@ -1,7 +1,7 @@
 "use client";
 
 import { useRef, useState } from "react";
-import { Check, CircleStop, Clock3, Download, Eye, Globe2, LoaderCircle, Lock, PencilLine, Plus, RotateCcw, Sparkles } from "lucide-react";
+import { Check, CircleStop, Clock3, Download, Globe2, ImageOff, LoaderCircle, Lock, PencilLine, Plus, RotateCcw, Sparkles } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
 import type { ImagePromptPreset } from "@/app/image/image-presets";
@@ -53,6 +53,10 @@ function getStoredImageSrc(image: StoredImage) {
     return `data:image/png;base64,${image.b64_json}`;
   }
   return image.url || "";
+}
+
+function getReferenceImagePreviewSrc(image: StoredReferenceImage) {
+  return image.dataUrl || image.url || "";
 }
 
 function isTurnBusy(turn: ImageTurn) {
@@ -182,6 +186,7 @@ export function ImageResults({
 }: ImageResultsProps) {
   const [imageDimensions, setImageDimensions] = useState<Record<string, string>>({});
   const [imageSizeLabels, setImageSizeLabels] = useState<Record<string, string>>({});
+  const [failedImageLoadKeys, setFailedImageLoadKeys] = useState<Record<string, boolean>>({});
   const [selectedImageIds, setSelectedImageIds] = useState<Record<string, boolean>>({});
   const [downloadingKey, setDownloadingKey] = useState<string | null>(null);
   const pendingImageSizeIdsRef = useRef<Set<string>>(new Set());
@@ -212,6 +217,36 @@ export function ImageResults({
         return current;
       }
       return { ...current, [id]: sizeLabel };
+    });
+  };
+
+  const markImageLoadFailed = (key: string, selectionKey?: string) => {
+    setFailedImageLoadKeys((current) => {
+      if (current[key]) {
+        return current;
+      }
+      return { ...current, [key]: true };
+    });
+    if (selectionKey) {
+      setSelectedImageIds((current) => {
+        if (!current[selectionKey]) {
+          return current;
+        }
+        const next = { ...current };
+        delete next[selectionKey];
+        return next;
+      });
+    }
+  };
+
+  const clearImageLoadFailed = (key: string) => {
+    setFailedImageLoadKeys((current) => {
+      if (!current[key]) {
+        return current;
+      }
+      const next = { ...current };
+      delete next[key];
+      return next;
     });
   };
 
@@ -304,37 +339,44 @@ export function ImageResults({
     <div className="mx-auto flex w-full max-w-[980px] flex-col gap-5 sm:gap-8">
       {selectedConversation.turns.map((turn, turnIndex) => {
         const progress = progressByTurnKey[turnProgressKey(selectedConversation.id, turn.id)];
-        const referenceLightboxImages = turn.referenceImages.map((image, index) => ({
-          id: `${turn.id}-reference-${index}`,
-          src: image.dataUrl,
-        }));
+        const referenceLightboxImages = turn.referenceImages.flatMap((image, index) => {
+          const src = getReferenceImagePreviewSrc(image);
+          const id = `${turn.id}-reference-${index}`;
+          const loadKey = `${selectedConversation.id}:${id}:${src}`;
+          return src && !failedImageLoadKeys[loadKey] ? [{ id, src }] : [];
+        });
         const downloadableImages = turn.images.flatMap((image, index) => {
           const src = image.status === "success" ? getStoredImageSrc(image) : "";
-          return src
-            ? [
-                {
-                  id: image.id,
-                  selectionKey: imageSelectionKey(selectedConversation.id, turn.id, image.id),
-                  src,
-                  fileName: buildDownloadName(turn.createdAt, turn.id, index),
-                  imageIndex: index,
-                },
-              ]
-            : [];
+          const selectionKey = imageSelectionKey(selectedConversation.id, turn.id, image.id);
+          const imageLoadKey = `${selectionKey}:${src}`;
+          if (!src || failedImageLoadKeys[imageLoadKey]) {
+            return [];
+          }
+          return [
+            {
+              id: image.id,
+              selectionKey,
+              src,
+              fileName: buildDownloadName(turn.createdAt, turn.id, index),
+              imageIndex: index,
+            },
+          ];
         });
         const selectedDownloadableImages = downloadableImages.filter((image) => selectedImageIds[image.selectionKey]);
         const successfulTurnImages = turn.images.flatMap((image) => {
           const src = image.status === "success" ? getStoredImageSrc(image) : "";
-          return src
-            ? [
-                {
-                  id: image.id,
-                  src,
-                  sizeLabel: image.b64_json ? formatBase64ImageFileSize(image.b64_json) : imageSizeLabels[image.id],
-                  dimensions: imageDimensions[image.id],
-                },
-              ]
-            : [];
+          const selectionKey = imageSelectionKey(selectedConversation.id, turn.id, image.id);
+          if (!src || failedImageLoadKeys[`${selectionKey}:${src}`]) {
+            return [];
+          }
+          return [
+            {
+              id: image.id,
+              src,
+              sizeLabel: image.b64_json ? formatBase64ImageFileSize(image.b64_json) : imageSizeLabels[image.id],
+              dimensions: imageDimensions[image.id],
+            },
+          ];
         });
         const textReplyImages = turn.images
           .map((image, index) => ({ image, index }))
@@ -463,21 +505,55 @@ export function ImageResults({
                   <div className="whitespace-pre-wrap break-words">{turn.prompt}</div>
                   {turn.referenceImages.length > 0 ? (
                     <div className="mt-3 flex flex-wrap justify-start gap-2">
-                      {turn.referenceImages.map((image, index) => (
-                        <button
-                          key={`${turn.id}-${image.name}-${index}`}
-                          type="button"
-                          onClick={() => onOpenLightbox(referenceLightboxImages, index)}
-                          className="group relative size-20 shrink-0 overflow-hidden rounded-2xl border border-stone-200/80 bg-stone-100/60 text-left transition hover:border-stone-300 sm:size-24"
-                          aria-label={`预览参考图 ${image.name || index + 1}`}
-                        >
-                          <img
-                            src={image.dataUrl}
-                            alt={image.name || `参考图 ${index + 1}`}
-                            className="absolute inset-0 h-full w-full object-cover transition duration-200 group-hover:scale-[1.02]"
-                          />
-                        </button>
-                      ))}
+                      {turn.referenceImages.map((image, index) => {
+                        const src = getReferenceImagePreviewSrc(image);
+                        const referenceId = `${turn.id}-reference-${index}`;
+                        const referenceLoadKey = `${selectedConversation.id}:${referenceId}:${src}`;
+                        const referenceLoadFailed = !src || Boolean(failedImageLoadKeys[referenceLoadKey]);
+                        const referenceLightboxIndex = referenceLightboxImages.findIndex((item) => item.id === referenceId);
+
+                        return (
+                          <button
+                            key={`${turn.id}-${image.name}-${index}`}
+                            type="button"
+                            onClick={() => {
+                              if (referenceLoadFailed || referenceLightboxIndex < 0) {
+                                return;
+                              }
+                              onOpenLightbox(referenceLightboxImages, referenceLightboxIndex);
+                            }}
+                            disabled={referenceLoadFailed}
+                            className={cn(
+                              "group relative size-20 shrink-0 overflow-hidden rounded-2xl border border-stone-200/80 bg-stone-100/60 text-left transition hover:border-stone-300 disabled:cursor-default disabled:hover:border-stone-200/80 sm:size-24",
+                              referenceLoadFailed && "bg-stone-100 text-stone-500",
+                            )}
+                            aria-label={referenceLoadFailed ? "引用图片已删除或不可访问" : `预览参考图 ${image.name || index + 1}`}
+                          >
+                            <div
+                              className={cn(
+                                "absolute inset-0 flex flex-col items-center justify-center gap-1 px-2 text-center text-[11px] leading-4 text-stone-500",
+                                referenceLoadFailed ? "opacity-100" : "opacity-0",
+                              )}
+                              aria-hidden={!referenceLoadFailed}
+                            >
+                              <ImageOff className="size-5 text-stone-400" />
+                              <span>图片已删除</span>
+                            </div>
+                            {src ? (
+                              <img
+                                src={src}
+                                alt={image.name || `参考图 ${index + 1}`}
+                                className={cn(
+                                  "absolute inset-0 h-full w-full object-cover transition duration-200 group-hover:scale-[1.02]",
+                                  referenceLoadFailed && "hidden",
+                                )}
+                                onLoad={() => clearImageLoadFailed(referenceLoadKey)}
+                                onError={() => markImageLoadFailed(referenceLoadKey)}
+                              />
+                            ) : null}
+                          </button>
+                        );
+                      })}
                     </div>
                   ) : null}
                 </div>
@@ -554,7 +630,9 @@ export function ImageResults({
                     if (image.status === "success" && imageSrc) {
                       const currentIndex = successfulTurnImages.findIndex((item) => item.id === image.id);
                       const selectionKey = imageSelectionKey(selectedConversation.id, turn.id, image.id);
-                      const selected = Boolean(selectedImageIds[selectionKey]);
+                      const imageLoadKey = `${selectionKey}:${imageSrc}`;
+                      const imageLoadFailed = Boolean(failedImageLoadKeys[imageLoadKey]);
+                      const selected = !imageLoadFailed && Boolean(selectedImageIds[selectionKey]);
                       const sizeLabel = image.b64_json ? formatBase64ImageFileSize(image.b64_json) : imageSizeLabels[image.id] || "";
                       const dimensions = imageDimensions[image.id];
                       const imageMeta = [dimensions, sizeLabel].filter(Boolean).join(" | ");
@@ -569,7 +647,7 @@ export function ImageResults({
                         <figure
                           key={image.id}
                           className={cn(
-                            "group relative mb-3 inline-block w-full break-inside-avoid overflow-hidden rounded-[22px] bg-[#f0f0f0] shadow-[0_0_15px_rgba(44,30,116,0.16)] sm:mb-4",
+                            "group relative mb-3 inline-block min-h-[160px] w-full break-inside-avoid overflow-hidden rounded-[22px] bg-[#f0f0f0] shadow-[0_0_15px_rgba(44,30,116,0.16)] sm:mb-4",
                             selected && "ring-2 ring-[#1456f0]/90 ring-offset-2",
                           )}
                           onMouseLeave={(event) => blurFocusedElementInContainer(event.currentTarget)}
@@ -577,17 +655,34 @@ export function ImageResults({
                           <button
                             type="button"
                             onClick={(event) => {
-                              toggleImageSelection(selectionKey);
+                              if (imageLoadFailed || currentIndex < 0) {
+                                return;
+                              }
+                              onOpenLightbox(successfulTurnImages, currentIndex);
                               event.currentTarget.blur();
                             }}
-                            className="block w-full cursor-pointer overflow-hidden text-left"
-                            aria-label={selected ? "取消选择图片" : "选择图片"}
+                            className="relative block min-h-[160px] w-full cursor-pointer overflow-hidden text-left"
+                            aria-label="查看图片"
                           >
+                            <div
+                              className={cn(
+                                "absolute inset-0 flex min-h-[160px] flex-col items-center justify-center gap-2 px-5 py-8 text-center text-sm leading-6 text-[#64748b]",
+                                imageLoadFailed ? "opacity-100" : "opacity-0",
+                              )}
+                              aria-hidden={!imageLoadFailed}
+                            >
+                              <ImageOff className="size-6 text-[#94a3b8]" />
+                              <span>图片已删除或不可访问</span>
+                            </div>
                             <img
                               src={imageSrc}
                               alt={`Generated result ${index + 1}`}
-                              className="block h-auto w-full transition duration-200 group-hover:brightness-95"
+                              className={cn(
+                                "relative z-10 block h-auto w-full transition duration-200 group-hover:brightness-95",
+                                imageLoadFailed && "hidden",
+                              )}
                               onLoad={(event) => {
+                                clearImageLoadFailed(imageLoadKey);
                                 updateImageDimensions(
                                   image.id,
                                   event.currentTarget.naturalWidth,
@@ -597,101 +692,97 @@ export function ImageResults({
                                   ensureImageSizeLabel(image.id, imageSrc);
                                 }
                               }}
+                              onError={() => markImageLoadFailed(imageLoadKey, selectionKey)}
                             />
                           </button>
-                          <button
-                            type="button"
-                            onClick={(event) => {
-                              toggleImageSelection(selectionKey);
-                              event.currentTarget.blur();
-                            }}
-                            className={cn(
-                              "absolute top-2 left-2 z-10 inline-flex size-6 items-center justify-center rounded-full border transition duration-150",
-                              selected
-                                ? "border-[#1456f0] bg-[#1456f0] text-white opacity-100 shadow-sm"
-                                : "pointer-events-none border-white/90 bg-black/20 text-transparent opacity-0 shadow-sm group-hover:pointer-events-auto group-hover:opacity-100 group-focus-within:pointer-events-auto group-focus-within:opacity-100 hover:bg-black/30",
-                            )}
-                            aria-label={selected ? "取消选择图片" : "选择图片"}
-                          >
-                            {selected ? <Check className="size-3.5" /> : null}
-                          </button>
-                          <div className="pointer-events-none absolute top-2 right-2 z-10 flex items-center gap-1 opacity-0 transition duration-150 group-hover:pointer-events-auto group-hover:opacity-100 group-focus-within:pointer-events-auto group-focus-within:opacity-100">
+                          {!imageLoadFailed ? (
                             <button
                               type="button"
                               onClick={(event) => {
+                                toggleImageSelection(selectionKey);
                                 event.currentTarget.blur();
-                                onOpenLightbox(successfulTurnImages, currentIndex);
                               }}
-                              className="inline-flex h-7 items-center gap-1 rounded-full bg-white/95 px-2 text-[11px] font-medium text-stone-800 shadow-sm transition hover:bg-white hover:text-stone-950"
-                              aria-label="View Original"
-                              title="View Original"
+                              className={cn(
+                                "absolute top-2 left-2 z-10 inline-flex size-6 items-center justify-center rounded-full border transition duration-150",
+                                selected
+                                  ? "border-[#1456f0] bg-[#1456f0] text-white opacity-100 shadow-sm"
+                                  : "pointer-events-none border-white/90 bg-black/20 text-transparent opacity-0 shadow-sm group-hover:pointer-events-auto group-hover:opacity-100 group-focus-within:pointer-events-auto group-focus-within:opacity-100 hover:bg-black/30",
+                              )}
+                              aria-label={selected ? "取消选择图片" : "选择图片"}
                             >
-                              <Eye className="size-3" />
-                              View Original
+                              {selected ? <Check className="size-3.5" /> : null}
                             </button>
-                            <button
-                              type="button"
-                              onClick={(event) => {
-                                event.currentTarget.blur();
-                                onContinueEdit(selectedConversation.id, image);
-                              }}
-                              className="inline-flex size-7 items-center justify-center rounded-full bg-white/95 text-stone-800 shadow-sm transition hover:bg-white hover:text-stone-950"
-                              aria-label="加入编辑"
-                              title="加入编辑"
-                            >
-                              <Plus className="size-3.5" />
-                            </button>
-                          </div>
-                          <div className="absolute right-2 bottom-2 z-20 flex items-center gap-1">
-                            {canUpdateVisibility ? (
+                          ) : null}
+                          {!imageLoadFailed ? (
+                            <div className="pointer-events-none absolute top-2 right-2 z-10 flex items-center gap-1 opacity-0 transition duration-150 group-hover:pointer-events-auto group-hover:opacity-100 group-focus-within:pointer-events-auto group-focus-within:opacity-100">
                               <button
                                 type="button"
                                 onClick={(event) => {
-                                  event.stopPropagation();
                                   event.currentTarget.blur();
-                                  void onImageVisibilityChange(
-                                    selectedConversation.id,
-                                    turn.id,
-                                    index,
-                                    nextVisibility,
-                                  );
+                                  onContinueEdit(selectedConversation.id, image);
                                 }}
-                                disabled={isVisibilityMutating}
-                                className={cn(
-                                  "inline-flex h-7 items-center gap-1.5 rounded-full px-2.5 text-[11px] font-medium opacity-0 shadow-sm transition group-hover:opacity-100 group-focus-within:opacity-100 disabled:cursor-not-allowed disabled:opacity-70",
-                                  imageVisibilityActionClass(visibility),
-                                )}
-                                aria-label={visibility === "public" ? "取消公开图片" : "公开图片"}
-                                title={visibility === "public" ? "取消公开" : "公开"}
+                                className="inline-flex size-7 items-center justify-center rounded-full bg-white/95 text-stone-800 shadow-sm transition hover:bg-white hover:text-stone-950"
+                                aria-label="加入编辑"
+                                title="加入编辑"
                               >
-                                {isVisibilityMutating ? (
-                                  <LoaderCircle className="size-3 animate-spin" />
-                                ) : visibility === "public" ? (
-                                  <Lock className="size-3" />
-                                ) : (
-                                  <Globe2 className="size-3" />
-                                )}
-                                {visibility === "public" ? "取消公开" : "公开"}
+                                <Plus className="size-3.5" />
                               </button>
-                            ) : null}
-                            <div
-                              className={cn(
-                                "pointer-events-none inline-flex h-7 items-center gap-1 rounded-full px-2 text-[11px] font-medium shadow-sm backdrop-blur-sm",
-                                imageVisibilityPillClass(visibility),
-                              )}
-                            >
-                              {visibility === "public" ? <Globe2 className="size-3" /> : <Lock className="size-3" />}
-                              {imageVisibilityLabel(visibility)}
                             </div>
-                          </div>
-                          <div className="pointer-events-none absolute inset-x-0 bottom-0 bg-gradient-to-t from-black/55 via-black/20 to-transparent px-2.5 pt-8 pb-11 opacity-0 transition duration-150 group-hover:opacity-100 group-focus-within:opacity-100">
-                            <div className="text-left text-white drop-shadow-sm">
-                              <div className="text-[10px] font-bold tracking-wide">{formatLabel}</div>
-                              {imageMeta ? (
-                                <div className="mt-0.5 truncate text-[11px] text-white/90">{imageMeta}</div>
+                          ) : null}
+                          {!imageLoadFailed ? (
+                            <div className="absolute right-2 bottom-2 z-20 flex items-center gap-1">
+                              {canUpdateVisibility ? (
+                                <button
+                                  type="button"
+                                  onClick={(event) => {
+                                    event.stopPropagation();
+                                    event.currentTarget.blur();
+                                    void onImageVisibilityChange(
+                                      selectedConversation.id,
+                                      turn.id,
+                                      index,
+                                      nextVisibility,
+                                    );
+                                  }}
+                                  disabled={isVisibilityMutating}
+                                  className={cn(
+                                    "inline-flex h-7 items-center gap-1.5 rounded-full px-2.5 text-[11px] font-medium opacity-0 shadow-sm transition group-hover:opacity-100 group-focus-within:opacity-100 disabled:cursor-not-allowed disabled:opacity-70",
+                                    imageVisibilityActionClass(visibility),
+                                  )}
+                                  aria-label={visibility === "public" ? "取消公开图片" : "公开图片"}
+                                  title={visibility === "public" ? "取消公开" : "公开"}
+                                >
+                                  {isVisibilityMutating ? (
+                                    <LoaderCircle className="size-3 animate-spin" />
+                                  ) : visibility === "public" ? (
+                                    <Lock className="size-3" />
+                                  ) : (
+                                    <Globe2 className="size-3" />
+                                  )}
+                                  {visibility === "public" ? "取消公开" : "公开"}
+                                </button>
                               ) : null}
+                              <div
+                                className={cn(
+                                  "pointer-events-none inline-flex h-7 items-center gap-1 rounded-full px-2 text-[11px] font-medium shadow-sm backdrop-blur-sm",
+                                  imageVisibilityPillClass(visibility),
+                                )}
+                              >
+                                {visibility === "public" ? <Globe2 className="size-3" /> : <Lock className="size-3" />}
+                                {imageVisibilityLabel(visibility)}
+                              </div>
                             </div>
-                          </div>
+                          ) : null}
+                          {!imageLoadFailed ? (
+                            <div className="pointer-events-none absolute inset-x-0 bottom-0 bg-gradient-to-t from-black/55 via-black/20 to-transparent px-2.5 pt-8 pb-11 opacity-0 transition duration-150 group-hover:opacity-100 group-focus-within:opacity-100">
+                              <div className="text-left text-white drop-shadow-sm">
+                                <div className="text-[10px] font-bold tracking-wide">{formatLabel}</div>
+                                {imageMeta ? (
+                                  <div className="mt-0.5 truncate text-[11px] text-white/90">{imageMeta}</div>
+                                ) : null}
+                              </div>
+                            </div>
+                          ) : null}
                         </figure>
                       );
                     }

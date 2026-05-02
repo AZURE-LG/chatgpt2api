@@ -116,6 +116,74 @@ function remoteReferenceImage(image: StoredReferenceImage): RemoteReferenceImage
   };
 }
 
+function referenceImagePersistentURL(image: StoredReferenceImage) {
+  if (image.url) {
+    return image.url;
+  }
+  if (image.dataUrl && !image.dataUrl.startsWith("data:") && !image.dataUrl.startsWith("blob:")) {
+    return image.dataUrl;
+  }
+  return "";
+}
+
+function dataURLToReferenceFile(dataUrl: string, fileName: string, mimeType: string) {
+  const [header, content] = dataUrl.split(",", 2);
+  const matchedMimeType = header.match(/data:(.*?);base64/i)?.[1];
+  const binary = atob(content || "");
+  const bytes = new Uint8Array(binary.length);
+  for (let index = 0; index < binary.length; index += 1) {
+    bytes[index] = binary.charCodeAt(index);
+  }
+  return new File([bytes], fileName, { type: mimeType || matchedMimeType || "image/png" });
+}
+
+async function previewToReferenceFile(image: StoredReferenceImage, index: number) {
+  const fileName = image.name || `reference-${index + 1}.png`;
+  const mimeType = image.type || "image/png";
+  if (image.dataUrl?.startsWith("data:")) {
+    return dataURLToReferenceFile(image.dataUrl, fileName, mimeType);
+  }
+  if (image.dataUrl?.startsWith("blob:")) {
+    const response = await fetch(image.dataUrl);
+    if (!response.ok) {
+      throw new Error("读取参考图失败");
+    }
+    const blob = await response.blob();
+    return new File([blob], fileName, { type: mimeType || blob.type || "image/png" });
+  }
+  return null;
+}
+
+async function persistReferenceImage(conversationId: string, image: StoredReferenceImage, index: number) {
+  if (referenceImagePersistentURL(image)) {
+    return image;
+  }
+  const file = await previewToReferenceFile(image, index);
+  if (!file) {
+    return image;
+  }
+  const attachment = await uploadConversationAttachment(conversationId, file);
+  return {
+    ...image,
+    id: attachment.id,
+    name: attachment.name || image.name || file.name,
+    type: attachment.type || image.type || file.type || "image/png",
+    url: attachment.url,
+  };
+}
+
+async function conversationWithPersistentReferenceImages(conversation: ImageConversation) {
+  const turns = await Promise.all(
+    conversation.turns.map(async (turn) => ({
+      ...turn,
+      referenceImages: await Promise.all(
+        turn.referenceImages.map((image, index) => persistReferenceImage(conversation.id, image, index)),
+      ),
+    })),
+  );
+  return { ...conversation, turns };
+}
+
 function remoteResultImage(image: StoredImage): RemoteResultImage {
   return {
     id: image.id,
@@ -228,9 +296,10 @@ export async function fetchImageConversation(id: string) {
 }
 
 export async function saveImageConversationRemote(conversation: ImageConversation) {
+  const persistentConversation = await conversationWithPersistentReferenceImages(conversation);
   const data = await httpRequest<{ item: RemoteConversation }>("/api/image-conversations", {
     method: "POST",
-    body: remoteConversation(conversation),
+    body: remoteConversation(persistentConversation),
   });
   return localConversation(data.item);
 }

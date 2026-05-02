@@ -9,6 +9,7 @@ chatgpt2api.exe
 node_modules/
 data
 edit
+tmp/
 
 docker-compose-local.yml
 

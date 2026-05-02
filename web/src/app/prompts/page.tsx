@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { Copy, LoaderCircle, Pencil, Plus, Search, Send, Trash2, X } from "lucide-react";
+import { Copy, Globe2, LoaderCircle, Lock, Pencil, Plus, Search, Send, Trash2, X } from "lucide-react";
 import { useNavigate } from "react-router-dom";
 import { toast } from "sonner";
 
@@ -19,6 +19,7 @@ import {
 import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectGroup, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Textarea } from "@/components/ui/textarea";
+import { copyTextToClipboard } from "@/lib/clipboard";
 import {
   copyPrompt,
   deletePrompt,
@@ -68,9 +69,24 @@ function parsePromptTags(value: string) {
   );
 }
 
+function stripImagePromptTitlePrefix(value: string) {
+  return value.trim().replace(/^图片提示词(?:[:：]\s*)?/, "").trim();
+}
+
+function compactPromptTitle(value: string, maxLength = 34) {
+  const normalized = value.replace(/\s+/g, " ").trim();
+  if (!normalized) {
+    return "";
+  }
+  return normalized.length > maxLength ? `${normalized.slice(0, maxLength)}...` : normalized;
+}
+
 function promptFormFromItem(item: PromptLibraryItem): PromptFormState {
+  const title =
+    stripImagePromptTitlePrefix(item.title) ||
+    (item.title.trim().startsWith("图片提示词") ? compactPromptTitle(item.body) || "未命名提示词" : item.title);
   return {
-    title: item.title,
+    title,
     body: item.body,
     tags: item.tags.join(", "),
     category: item.category,
@@ -85,27 +101,39 @@ function canMutatePrompt(item: PromptLibraryItem, session: StoredAuthSession) {
   return item.owner_id === session.subjectId || (session.role === "admin" && item.visibility === "public");
 }
 
-function compactPromptTitle(value: string, maxLength = 34) {
-  const normalized = value.replace(/\s+/g, " ").trim();
-  if (!normalized) {
-    return "";
-  }
-  return normalized.length > maxLength ? `${normalized.slice(0, maxLength)}...` : normalized;
-}
-
 function isGeneratedImageFileTitle(value: string) {
   const normalized = value.trim().replace(/\.[a-z0-9]+$/i, "");
   return /^\d{8,}_?[a-f0-9]{16,}$/i.test(normalized) || /^[a-f0-9]{24,}$/i.test(normalized);
 }
 
 function promptDisplayTitle(item: PromptLibraryItem) {
+  const bodyTitle = item.source_image_path ? compactPromptTitle(item.body) : "";
   if (item.source_image_path && isGeneratedImageFileTitle(item.title)) {
-    const bodyTitle = compactPromptTitle(item.body);
     if (bodyTitle) {
-      return `图片提示词：${bodyTitle}`;
+      return bodyTitle;
     }
   }
-  return item.title || "未命名提示词";
+  return stripImagePromptTitlePrefix(item.title) || bodyTitle || "未命名提示词";
+}
+
+function shouldShowOriginalPromptTitle(item: PromptLibraryItem, displayTitle: string) {
+  if (item.title.trim().startsWith("图片提示词")) {
+    return false;
+  }
+  if (stripImagePromptTitlePrefix(item.title) === displayTitle) {
+    return false;
+  }
+  return displayTitle !== item.title;
+}
+
+function promptVisibilityLabel(visibility: PromptVisibility) {
+  return visibility === "public" ? "公开" : "私有";
+}
+
+function promptVisibilityPillClass(visibility: PromptVisibility) {
+  return visibility === "public"
+    ? "border-[#bfdbfe] bg-[#e8f2ff] text-[#1456f0] dark:border-sky-500/40 dark:bg-sky-500/18 dark:text-sky-200"
+    : "border-slate-700 bg-[#181e25] text-white dark:border-white/18 dark:bg-white/12 dark:text-white";
 }
 
 function uniquePromptValues(items: PromptLibraryItem[], selector: (item: PromptLibraryItem) => string | string[]) {
@@ -213,7 +241,7 @@ function PromptsPageContent({ session }: { session: StoredAuthSession }) {
     }
   };
 
-  const handleCopyPrompt = async (item: PromptLibraryItem) => {
+  const handleCopyPromptToLibrary = async (item: PromptLibraryItem) => {
     setMutatingId(item.id);
     try {
       await copyPrompt(item.id);
@@ -223,6 +251,20 @@ function PromptsPageContent({ session }: { session: StoredAuthSession }) {
       toast.error(error instanceof Error ? error.message : "复制提示词失败");
     } finally {
       setMutatingId(null);
+    }
+  };
+
+  const handleCopyPromptText = async (item: PromptLibraryItem) => {
+    const body = item.body.trim();
+    if (!body) {
+      toast.error("提示词正文为空");
+      return;
+    }
+    try {
+      await copyTextToClipboard(body);
+      toast.success("提示词正文已复制");
+    } catch {
+      toast.error("复制失败");
     }
   };
 
@@ -373,8 +415,9 @@ function PromptsPageContent({ session }: { session: StoredAuthSession }) {
                 <div className="flex items-start justify-between gap-3">
                   <div className="min-w-0">
                     <div className="flex flex-wrap items-center gap-1.5">
-                      <span className="rounded-full bg-[#eef4ff] px-2 py-0.5 text-[11px] font-medium text-[#1456f0]">
-                        {item.visibility === "public" ? "公开" : "私有"}
+                      <span className={`inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-[11px] font-semibold ${promptVisibilityPillClass(item.visibility)}`}>
+                        {item.visibility === "public" ? <Globe2 className="size-3" /> : <Lock className="size-3" />}
+                        {promptVisibilityLabel(item.visibility)}
                       </span>
                       {item.category ? (
                         <span className="rounded-full bg-muted px-2 py-0.5 text-[11px] font-medium text-muted-foreground">
@@ -383,7 +426,7 @@ function PromptsPageContent({ session }: { session: StoredAuthSession }) {
                       ) : null}
                     </div>
                     <h2 className="mt-2 line-clamp-2 text-base font-semibold leading-6 text-foreground">{title}</h2>
-                    {title !== item.title ? (
+                    {shouldShowOriginalPromptTitle(item, title) ? (
                       <p className="mt-1 truncate text-[11px] text-muted-foreground">原标题：{item.title}</p>
                     ) : null}
                     <p className="mt-1 text-xs text-muted-foreground">作者：{item.owner_name || item.owner_id}</p>
@@ -411,17 +454,27 @@ function PromptsPageContent({ session }: { session: StoredAuthSession }) {
                       <Send className="size-3.5" />
                       应用
                     </Button>
+                    <Button
+                      type="button"
+                      size="sm"
+                      variant="outline"
+                      className="rounded-lg"
+                      onClick={() => void handleCopyPromptText(item)}
+                    >
+                      <Copy className="size-3.5" />
+                      复制正文
+                    </Button>
                     {canCopy ? (
                       <Button
                         type="button"
                         size="sm"
                         variant="outline"
                         className="rounded-lg"
-                        onClick={() => void handleCopyPrompt(item)}
+                        onClick={() => void handleCopyPromptToLibrary(item)}
                         disabled={mutatingId === item.id}
                       >
                         {mutatingId === item.id ? <LoaderCircle className="size-3.5 animate-spin" /> : <Copy className="size-3.5" />}
-                        复制
+                        存入我的
                       </Button>
                     ) : null}
                     {canEdit ? (
