@@ -64,12 +64,15 @@ func (a *App) routes() []appRoute {
 		subtree("/api/cpa/pools", a.handleCPA),
 		subtree("/api/sub2api/servers", a.handleSub2API),
 		subtree("/api/creation-tasks", a.handleCreationTasks),
+		subtree("/api/image-conversations", a.handleImageConversations),
+		subtree("/api/prompts", a.handlePrompts),
 		subtree("/api/register", a.handleRegister),
 		exact("", "/api/settings", a.handleSettings),
 		exact("", "/api/settings/login-page-image", a.handleLoginPageImageSettings),
 		exact(http.MethodGet, "/api/app-meta", a.handleAppMeta),
 		exact(http.MethodGet, "/api/admin/permissions", a.handlePermissionCatalog),
 		exact("", "/api/images/visibility", a.handleImageVisibility),
+		exact("", "/api/images/prompt-metadata", a.handleImagePromptMetadata),
 		exact("", "/api/images", a.handleImages),
 		exact("", "/api/logs/governance", a.handleLogGovernance),
 		exact(http.MethodGet, "/api/logs", a.handleLogs),
@@ -79,6 +82,7 @@ func (a *App) routes() []appRoute {
 
 		prefix("/images/", http.StripPrefix("/images/", http.FileServer(http.Dir(a.config.ImagesDir()))).ServeHTTP),
 		prefix("/image-thumbnails/", a.handleImageThumbnail),
+		prefix("/conversation-attachments/", a.handleConversationAttachment),
 		prefix("/login-page-images/", http.StripPrefix("/login-page-images/", http.FileServer(http.Dir(a.config.LoginPageImagesDir()))).ServeHTTP),
 	}
 }

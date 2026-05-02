@@ -179,6 +179,17 @@ export type ManagedImage = {
   height?: number;
   created_at: string;
   published_at?: string;
+  prompt?: string;
+  revised_prompt?: string;
+  manual_prompt?: string;
+  model?: string;
+  image_size?: string;
+  quality?: string;
+  mode?: string;
+  conversation_id?: string;
+  turn_id?: string;
+  task_id?: string;
+  prompt_id?: string;
 };
 
 export type SystemLog = {
@@ -264,11 +275,19 @@ export type CreationTask = {
   error?: string;
   output_type?: "text";
   visibility?: ImageVisibility;
+  conversation_id?: string;
+  turn_id?: string;
 };
 
 export type CreationTaskMessage = {
   role: "system" | "user" | "assistant" | "tool";
   content: string;
+};
+
+export type CreationTaskSubmitOptions = {
+  visibility?: ImageVisibility;
+  conversationId?: string;
+  turnId?: string;
 };
 
 export type ChatCompletionResponse = {
@@ -604,8 +623,9 @@ export async function createImageGenerationTask(
   quality?: ImageQuality,
   count = 1,
   messages?: CreationTaskMessage[],
-  visibility: ImageVisibility = "private",
+  options: CreationTaskSubmitOptions = {},
 ) {
+  const visibility = options.visibility || "private";
   return httpRequest<CreationTask>("/api/creation-tasks/image-generations", {
     method: "POST",
     body: {
@@ -616,6 +636,8 @@ export async function createImageGenerationTask(
       ...(quality ? { quality } : {}),
       ...(messages?.length ? { messages } : {}),
       visibility,
+      ...(options.conversationId ? { conversation_id: options.conversationId } : {}),
+      ...(options.turnId ? { turn_id: options.turnId } : {}),
       n: count,
     },
   });
@@ -630,8 +652,9 @@ export async function createImageEditTask(
   quality?: ImageQuality,
   count = 1,
   messages?: CreationTaskMessage[],
-  visibility: ImageVisibility = "private",
+  options: CreationTaskSubmitOptions = {},
 ) {
+  const visibility = options.visibility || "private";
   const formData = new FormData();
   const uploadFiles = Array.isArray(files) ? files : [files];
 
@@ -653,6 +676,12 @@ export async function createImageEditTask(
     formData.append("messages", JSON.stringify(messages));
   }
   formData.append("visibility", visibility);
+  if (options.conversationId) {
+    formData.append("conversation_id", options.conversationId);
+  }
+  if (options.turnId) {
+    formData.append("turn_id", options.turnId);
+  }
   formData.append("n", String(count));
 
   return httpRequest<CreationTask>("/api/creation-tasks/image-edits", {
@@ -666,6 +695,7 @@ export async function createChatCompletionTask(
   prompt: string,
   model: ImageModel,
   messages: CreationTaskMessage[],
+  options: CreationTaskSubmitOptions = {},
 ) {
   return httpRequest<CreationTask>("/api/creation-tasks/chat-completions", {
     method: "POST",
@@ -674,6 +704,9 @@ export async function createChatCompletionTask(
       prompt,
       model,
       messages,
+      ...(options.visibility ? { visibility: options.visibility } : {}),
+      ...(options.conversationId ? { conversation_id: options.conversationId } : {}),
+      ...(options.turnId ? { turn_id: options.turnId } : {}),
     },
   });
 }

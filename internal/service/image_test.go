@@ -56,6 +56,50 @@ func TestImageServiceListImagesReturnsEmptyArrays(t *testing.T) {
 	}
 }
 
+func TestImageServicePromptMetadataRoundTrip(t *testing.T) {
+	root := t.TempDir()
+	config := testImageConfig{root: root}
+	imagePath := filepath.Join(config.ImagesDir(), "2026", "04", "29", "sample.png")
+	if err := os.MkdirAll(filepath.Dir(imagePath), 0o755); err != nil {
+		t.Fatalf("MkdirAll() error = %v", err)
+	}
+	if err := writeTestPNG(imagePath); err != nil {
+		t.Fatalf("writeTestPNG() error = %v", err)
+	}
+
+	service := NewImageService(config)
+	service.RecordGeneratedImages([]string{"2026/04/29/sample.png"}, "user-1", "用户一", "private")
+	updated, err := service.UpdateImagePromptMetadata(ImagePromptMetadataUpdate{
+		Path:            "2026/04/29/sample.png",
+		Prompt:          "原始提示词",
+		RevisedPrompt:   "改写提示词",
+		ManualPrompt:    "手动提示词",
+		ManualPromptSet: true,
+		Model:           "gpt-image-2",
+		Size:            "1024x1024",
+		Quality:         "high",
+		Mode:            "generate",
+		ConversationID:  "conv-1",
+		TurnID:          "turn-1",
+		TaskID:          "task-1",
+	}, ImageAccessScope{OwnerID: "user-1"})
+	if err != nil {
+		t.Fatalf("UpdateImagePromptMetadata() error = %v", err)
+	}
+	if updated["prompt"] != "原始提示词" || updated["manual_prompt"] != "手动提示词" || updated["conversation_id"] != "conv-1" {
+		t.Fatalf("updated item = %#v", updated)
+	}
+
+	result := service.ListImages("http://127.0.0.1:8000", "", "", ImageAccessScope{OwnerID: "user-1"})
+	items := result["items"].([]map[string]any)
+	if len(items) != 1 {
+		t.Fatalf("items = %#v", items)
+	}
+	if items[0]["revised_prompt"] != "改写提示词" || items[0]["task_id"] != "task-1" {
+		t.Fatalf("ListImages() item = %#v", items[0])
+	}
+}
+
 func TestImageServiceListImagesDoesNotGenerateThumbnailsSynchronously(t *testing.T) {
 	root := t.TempDir()
 	config := testImageConfig{root: root}

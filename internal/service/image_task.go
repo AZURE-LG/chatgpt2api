@@ -25,6 +25,12 @@ const (
 
 type ImageTaskHandler func(context.Context, Identity, map[string]any) (map[string]any, error)
 
+type ImageTaskSubmitOptions struct {
+	Visibility     string
+	ConversationID string
+	TurnID         string
+}
+
 type ImageTaskService struct {
 	mu                  sync.RWMutex
 	path                string
@@ -81,39 +87,41 @@ func newImageTaskService(path string, store storage.JSONDocumentBackend, generat
 	return s
 }
 
-func (s *ImageTaskService) SubmitGeneration(ctx context.Context, identity Identity, clientTaskID, prompt, model, size, quality, baseURL string, n int, messages any, visibilityValues ...string) (map[string]any, error) {
+func (s *ImageTaskService) SubmitGeneration(ctx context.Context, identity Identity, clientTaskID, prompt, model, size, quality, baseURL string, n int, messages any, submitOptions ...ImageTaskSubmitOptions) (map[string]any, error) {
 	prompt = strings.TrimSpace(prompt)
 	if prompt == "" {
 		return nil, fmt.Errorf("prompt is required")
 	}
-	visibility, err := imageTaskVisibility(visibilityValues...)
+	options, err := normalizeImageTaskSubmitOptions(ImageVisibilityPrivate, submitOptions...)
 	if err != nil {
 		return nil, err
 	}
-	payload := map[string]any{"prompt": prompt, "model": model, "n": normalizedImageTaskCount(n), "size": size, "quality": quality, "response_format": "url", "base_url": baseURL, "visibility": visibility}
+	payload := map[string]any{"prompt": prompt, "model": model, "n": normalizedImageTaskCount(n), "size": size, "quality": quality, "response_format": "url", "base_url": baseURL, "visibility": options.Visibility}
+	addTaskSubmitOptions(payload, options)
 	if messages != nil {
 		payload["messages"] = messages
 	}
 	return s.submit(ctx, identity, clientTaskID, "generate", payload)
 }
 
-func (s *ImageTaskService) SubmitEdit(ctx context.Context, identity Identity, clientTaskID, prompt, model, size, quality, baseURL string, images any, n int, messages any, visibilityValues ...string) (map[string]any, error) {
+func (s *ImageTaskService) SubmitEdit(ctx context.Context, identity Identity, clientTaskID, prompt, model, size, quality, baseURL string, images any, n int, messages any, submitOptions ...ImageTaskSubmitOptions) (map[string]any, error) {
 	prompt = strings.TrimSpace(prompt)
 	if prompt == "" {
 		return nil, fmt.Errorf("prompt is required")
 	}
-	visibility, err := imageTaskVisibility(visibilityValues...)
+	options, err := normalizeImageTaskSubmitOptions(ImageVisibilityPrivate, submitOptions...)
 	if err != nil {
 		return nil, err
 	}
-	payload := map[string]any{"prompt": prompt, "images": images, "model": model, "n": normalizedImageTaskCount(n), "size": size, "quality": quality, "response_format": "url", "base_url": baseURL, "visibility": visibility}
+	payload := map[string]any{"prompt": prompt, "images": images, "model": model, "n": normalizedImageTaskCount(n), "size": size, "quality": quality, "response_format": "url", "base_url": baseURL, "visibility": options.Visibility}
+	addTaskSubmitOptions(payload, options)
 	if messages != nil {
 		payload["messages"] = messages
 	}
 	return s.submit(ctx, identity, clientTaskID, "edit", payload)
 }
 
-func (s *ImageTaskService) SubmitChat(ctx context.Context, identity Identity, clientTaskID, prompt, model string, messages any) (map[string]any, error) {
+func (s *ImageTaskService) SubmitChat(ctx context.Context, identity Identity, clientTaskID, prompt, model string, messages any, submitOptions ...ImageTaskSubmitOptions) (map[string]any, error) {
 	prompt = strings.TrimSpace(prompt)
 	if prompt == "" {
 		return nil, fmt.Errorf("prompt is required")
@@ -121,7 +129,12 @@ func (s *ImageTaskService) SubmitChat(ctx context.Context, identity Identity, cl
 	if len(util.AsMapSlice(messages)) == 0 {
 		return nil, fmt.Errorf("messages are required")
 	}
-	payload := map[string]any{"prompt": prompt, "model": model, "messages": messages, "n": 1, "visibility": ImageVisibilityPrivate}
+	options, err := normalizeImageTaskSubmitOptions(ImageVisibilityPrivate, submitOptions...)
+	if err != nil {
+		return nil, err
+	}
+	payload := map[string]any{"prompt": prompt, "model": model, "messages": messages, "n": 1, "visibility": options.Visibility}
+	addTaskSubmitOptions(payload, options)
 	return s.submit(ctx, identity, clientTaskID, "chat", payload)
 }
 
@@ -220,7 +233,14 @@ func (s *ImageTaskService) submit(ctx context.Context, identity Identity, client
 		return nil, err
 	}
 	taskCtx, cancel := context.WithCancel(context.Background())
+	payload["client_task_id"] = taskID
 	task := map[string]any{"id": taskID, "owner_id": owner, "status": TaskStatusQueued, "mode": mode, "model": firstNonEmpty(util.Clean(payload["model"]), util.ImageModelAuto), "size": util.Clean(payload["size"]), "quality": util.Clean(payload["quality"]), "visibility": util.Clean(payload["visibility"]), "count": count, "created_at": now, "updated_at": now}
+	if conversationID := util.Clean(payload["conversation_id"]); conversationID != "" {
+		task["conversation_id"] = conversationID
+	}
+	if turnID := util.Clean(payload["turn_id"]); turnID != "" {
+		task["turn_id"] = turnID
+	}
 	s.tasks[key] = task
 	s.cancels[key] = cancel
 	_ = s.saveLocked()
@@ -460,6 +480,12 @@ func (s *ImageTaskService) loadLocked() map[string]map[string]any {
 		if outputType := util.Clean(task["output_type"]); outputType != "" {
 			normalized["output_type"] = outputType
 		}
+		if conversationID := util.Clean(task["conversation_id"]); conversationID != "" {
+			normalized["conversation_id"] = conversationID
+		}
+		if turnID := util.Clean(task["turn_id"]); turnID != "" {
+			normalized["turn_id"] = turnID
+		}
 		tasks[taskKey(owner, id)] = normalized
 	}
 	return tasks
@@ -539,14 +565,44 @@ func publicTask(task map[string]any) map[string]any {
 	if visibility := util.Clean(task["visibility"]); visibility != "" {
 		item["visibility"] = visibility
 	}
+	if conversationID := util.Clean(task["conversation_id"]); conversationID != "" {
+		item["conversation_id"] = conversationID
+	}
+	if turnID := util.Clean(task["turn_id"]); turnID != "" {
+		item["turn_id"] = turnID
+	}
 	return item
 }
 
-func imageTaskVisibility(values ...string) (string, error) {
-	if len(values) == 0 {
-		return ImageVisibilityPrivate, nil
+func normalizeImageTaskSubmitOptions(defaultVisibility string, optionValues ...ImageTaskSubmitOptions) (ImageTaskSubmitOptions, error) {
+	options := ImageTaskSubmitOptions{}
+	if len(optionValues) > 0 {
+		options = optionValues[0]
 	}
-	return NormalizeImageVisibility(values[0])
+	visibility := defaultVisibility
+	if visibility == "" {
+		visibility = ImageVisibilityPrivate
+	}
+	if strings.TrimSpace(options.Visibility) != "" {
+		visibility = options.Visibility
+	}
+	normalized, err := NormalizeImageVisibility(visibility)
+	if err != nil {
+		return ImageTaskSubmitOptions{}, err
+	}
+	options.Visibility = normalized
+	options.ConversationID = util.Clean(options.ConversationID)
+	options.TurnID = util.Clean(options.TurnID)
+	return options, nil
+}
+
+func addTaskSubmitOptions(payload map[string]any, options ImageTaskSubmitOptions) {
+	if options.ConversationID != "" {
+		payload["conversation_id"] = options.ConversationID
+	}
+	if options.TurnID != "" {
+		payload["turn_id"] = options.TurnID
+	}
 }
 
 func ownerID(identity Identity) string {

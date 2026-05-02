@@ -34,6 +34,7 @@ const navItems = [
   { href: "/accounts", label: "号池管理" },
   { href: "/register", label: "注册机" },
   { href: "/image-manager", label: "图片库" },
+  { href: "/prompts", label: "提示词" },
   { href: "/users", label: "用户管理" },
   { href: "/rbac", label: "角色权限" },
   { href: "/logs", label: "日志管理" },

@@ -46,10 +46,21 @@ type ImageAccessScope struct {
 }
 
 type imageMetadata struct {
-	OwnerID     string
-	OwnerName   string
-	Visibility  string
-	PublishedAt string
+	OwnerID        string
+	OwnerName      string
+	Visibility     string
+	PublishedAt    string
+	Prompt         string
+	RevisedPrompt  string
+	ManualPrompt   string
+	Model          string
+	Size           string
+	Quality        string
+	Mode           string
+	ConversationID string
+	TurnID         string
+	TaskID         string
+	PromptID       string
 }
 
 type ImageService struct {
@@ -68,6 +79,22 @@ type imageFileRef struct {
 type thumbnailJob struct {
 	done   chan struct{}
 	result map[string]any
+}
+
+type ImagePromptMetadataUpdate struct {
+	Path            string
+	Prompt          string
+	RevisedPrompt   string
+	ManualPrompt    string
+	ManualPromptSet bool
+	Model           string
+	Size            string
+	Quality         string
+	Mode            string
+	ConversationID  string
+	TurnID          string
+	TaskID          string
+	PromptID        string
 }
 
 func NewImageService(config ImageConfig, backend ...storage.Backend) *ImageService {
@@ -130,6 +157,7 @@ func (s *ImageService) ListImages(baseURL, startDate, endDate string, scope Imag
 		if meta.PublishedAt != "" {
 			item["published_at"] = meta.PublishedAt
 		}
+		addImagePromptMetadata(item, meta)
 		if thumbRel, ok := thumb["thumbnail_rel"].(string); ok && thumbRel != "" {
 			item["thumbnail_url"] = thumbnailURL(baseURL, thumbRel, info.ModTime())
 		} else {
@@ -210,6 +238,85 @@ func (s *ImageService) UpdateImageVisibility(value, visibility string, scope Ima
 	if nextMeta.PublishedAt != "" {
 		item["published_at"] = nextMeta.PublishedAt
 	}
+	addImagePromptMetadata(item, nextMeta)
+	return item, nil
+}
+
+func (s *ImageService) UpdateImagePromptMetadata(update ImagePromptMetadataUpdate, scope ImageAccessScope) (map[string]any, error) {
+	rel, err := imageRelativePathFromValue(update.Path)
+	if err != nil {
+		return nil, err
+	}
+	imageRoot, err := filepath.Abs(s.config.ImagesDir())
+	if err != nil {
+		return nil, err
+	}
+	ref, err := s.imageFileRef(imageRoot, rel)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil, errors.New("image not found")
+		}
+		return nil, err
+	}
+	meta := s.imageMetadata(ref.rel)
+	if !scope.All && (scope.OwnerID == "" || meta.OwnerID != scope.OwnerID) {
+		return nil, errors.New("image not found")
+	}
+	if value := strings.TrimSpace(update.Prompt); value != "" {
+		meta.Prompt = value
+	}
+	if value := strings.TrimSpace(update.RevisedPrompt); value != "" {
+		meta.RevisedPrompt = value
+	}
+	if update.ManualPromptSet {
+		meta.ManualPrompt = strings.TrimSpace(update.ManualPrompt)
+	}
+	if value := strings.TrimSpace(update.Model); value != "" {
+		meta.Model = value
+	}
+	if value := strings.TrimSpace(update.Size); value != "" {
+		meta.Size = value
+	}
+	if value := strings.TrimSpace(update.Quality); value != "" {
+		meta.Quality = value
+	}
+	if value := strings.TrimSpace(update.Mode); value != "" {
+		meta.Mode = value
+	}
+	if value := strings.TrimSpace(update.ConversationID); value != "" {
+		meta.ConversationID = value
+	}
+	if value := strings.TrimSpace(update.TurnID); value != "" {
+		meta.TurnID = value
+	}
+	if value := strings.TrimSpace(update.TaskID); value != "" {
+		meta.TaskID = value
+	}
+	if value := strings.TrimSpace(update.PromptID); value != "" {
+		meta.PromptID = value
+	}
+	if err := s.writeImageMetadata(ref.rel, meta); err != nil {
+		return nil, err
+	}
+	nextMeta := s.imageMetadata(ref.rel)
+	item := map[string]any{
+		"name":       filepath.Base(ref.path),
+		"path":       ref.rel,
+		"date":       imageDay(ref.rel, ref.info.ModTime()),
+		"size":       ref.info.Size(),
+		"visibility": nextMeta.Visibility,
+		"created_at": ref.info.ModTime().Format("2006-01-02 15:04:05"),
+	}
+	if nextMeta.OwnerID != "" {
+		item["owner_id"] = nextMeta.OwnerID
+	}
+	if nextMeta.OwnerName != "" {
+		item["owner_name"] = nextMeta.OwnerName
+	}
+	if nextMeta.PublishedAt != "" {
+		item["published_at"] = nextMeta.PublishedAt
+	}
+	addImagePromptMetadata(item, nextMeta)
 	return item, nil
 }
 
@@ -508,10 +615,57 @@ func normalizeImageMetadata(raw map[string]any) imageMetadata {
 		visibility = ImageVisibilityPrivate
 	}
 	return imageMetadata{
-		OwnerID:     strings.TrimSpace(toString(raw["owner_id"])),
-		OwnerName:   strings.TrimSpace(toString(raw["owner_name"])),
-		Visibility:  visibility,
-		PublishedAt: strings.TrimSpace(toString(raw["published_at"])),
+		OwnerID:        strings.TrimSpace(toString(raw["owner_id"])),
+		OwnerName:      strings.TrimSpace(toString(raw["owner_name"])),
+		Visibility:     visibility,
+		PublishedAt:    strings.TrimSpace(toString(raw["published_at"])),
+		Prompt:         strings.TrimSpace(toString(raw["prompt"])),
+		RevisedPrompt:  strings.TrimSpace(toString(raw["revised_prompt"])),
+		ManualPrompt:   strings.TrimSpace(toString(raw["manual_prompt"])),
+		Model:          strings.TrimSpace(toString(raw["model"])),
+		Size:           strings.TrimSpace(toString(raw["size"])),
+		Quality:        strings.TrimSpace(toString(raw["quality"])),
+		Mode:           strings.TrimSpace(toString(raw["mode"])),
+		ConversationID: strings.TrimSpace(toString(raw["conversation_id"])),
+		TurnID:         strings.TrimSpace(toString(raw["turn_id"])),
+		TaskID:         strings.TrimSpace(toString(raw["task_id"])),
+		PromptID:       strings.TrimSpace(toString(raw["prompt_id"])),
+	}
+}
+
+func addImagePromptMetadata(item map[string]any, meta imageMetadata) {
+	if meta.Prompt != "" {
+		item["prompt"] = meta.Prompt
+	}
+	if meta.RevisedPrompt != "" {
+		item["revised_prompt"] = meta.RevisedPrompt
+	}
+	if meta.ManualPrompt != "" {
+		item["manual_prompt"] = meta.ManualPrompt
+	}
+	if meta.Model != "" {
+		item["model"] = meta.Model
+	}
+	if meta.Size != "" {
+		item["image_size"] = meta.Size
+	}
+	if meta.Quality != "" {
+		item["quality"] = meta.Quality
+	}
+	if meta.Mode != "" {
+		item["mode"] = meta.Mode
+	}
+	if meta.ConversationID != "" {
+		item["conversation_id"] = meta.ConversationID
+	}
+	if meta.TurnID != "" {
+		item["turn_id"] = meta.TurnID
+	}
+	if meta.TaskID != "" {
+		item["task_id"] = meta.TaskID
+	}
+	if meta.PromptID != "" {
+		item["prompt_id"] = meta.PromptID
 	}
 }
 
@@ -560,6 +714,39 @@ func (s *ImageService) writeImageMetadata(rel string, meta imageMetadata) error 
 	}
 	if meta.PublishedAt != "" {
 		value["published_at"] = meta.PublishedAt
+	}
+	if meta.Prompt != "" {
+		value["prompt"] = meta.Prompt
+	}
+	if meta.RevisedPrompt != "" {
+		value["revised_prompt"] = meta.RevisedPrompt
+	}
+	if meta.ManualPrompt != "" {
+		value["manual_prompt"] = meta.ManualPrompt
+	}
+	if meta.Model != "" {
+		value["model"] = meta.Model
+	}
+	if meta.Size != "" {
+		value["size"] = meta.Size
+	}
+	if meta.Quality != "" {
+		value["quality"] = meta.Quality
+	}
+	if meta.Mode != "" {
+		value["mode"] = meta.Mode
+	}
+	if meta.ConversationID != "" {
+		value["conversation_id"] = meta.ConversationID
+	}
+	if meta.TurnID != "" {
+		value["turn_id"] = meta.TurnID
+	}
+	if meta.TaskID != "" {
+		value["task_id"] = meta.TaskID
+	}
+	if meta.PromptID != "" {
+		value["prompt_id"] = meta.PromptID
 	}
 	if s.store != nil {
 		return s.store.SaveJSONDocument(imageOwnerDocumentName(rel), value)

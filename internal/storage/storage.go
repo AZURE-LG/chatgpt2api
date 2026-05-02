@@ -346,6 +346,14 @@ func (b *DatabaseBackend) init() error {
 		`CREATE TABLE IF NOT EXISTS json_documents (name TEXT PRIMARY KEY, data TEXT NOT NULL, updated_at TEXT NOT NULL)`,
 		`CREATE TABLE IF NOT EXISTS logs (id INTEGER PRIMARY KEY AUTOINCREMENT, created_at TEXT NOT NULL, type TEXT NOT NULL, day TEXT NOT NULL, data TEXT NOT NULL)`,
 		`CREATE INDEX IF NOT EXISTS idx_logs_day_id ON logs (day, id)`,
+		`CREATE TABLE IF NOT EXISTS image_conversations (id TEXT PRIMARY KEY, owner_id TEXT NOT NULL, owner_name TEXT NOT NULL, title TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL, deleted_at TEXT NOT NULL)`,
+		`CREATE INDEX IF NOT EXISTS idx_image_conversations_owner_updated ON image_conversations (owner_id, deleted_at, updated_at)`,
+		`CREATE TABLE IF NOT EXISTS image_conversation_turns (id TEXT PRIMARY KEY, conversation_id TEXT NOT NULL, owner_id TEXT NOT NULL, prompt TEXT NOT NULL, model TEXT NOT NULL, mode TEXT NOT NULL, count INTEGER NOT NULL, size TEXT NOT NULL, quality TEXT NOT NULL, visibility TEXT NOT NULL, status TEXT NOT NULL, error TEXT NOT NULL, reference_images_json TEXT NOT NULL, result_images_json TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL)`,
+		`CREATE INDEX IF NOT EXISTS idx_image_conversation_turns_conversation ON image_conversation_turns (owner_id, conversation_id, created_at)`,
+		`CREATE TABLE IF NOT EXISTS conversation_attachments (id TEXT PRIMARY KEY, owner_id TEXT NOT NULL, conversation_id TEXT NOT NULL, turn_id TEXT NOT NULL, file_name TEXT NOT NULL, mime_type TEXT NOT NULL, size INTEGER NOT NULL, path TEXT NOT NULL, created_at TEXT NOT NULL)`,
+		`CREATE INDEX IF NOT EXISTS idx_conversation_attachments_owner_conversation ON conversation_attachments (owner_id, conversation_id, created_at)`,
+		`CREATE TABLE IF NOT EXISTS prompts (id TEXT PRIMARY KEY, owner_id TEXT NOT NULL, owner_name TEXT NOT NULL, title TEXT NOT NULL, body TEXT NOT NULL, tags_json TEXT NOT NULL, category TEXT NOT NULL, note TEXT NOT NULL, model TEXT NOT NULL, use_case TEXT NOT NULL, visibility TEXT NOT NULL, source_conversation_id TEXT NOT NULL, source_turn_id TEXT NOT NULL, source_image_path TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL)`,
+		`CREATE INDEX IF NOT EXISTS idx_prompts_owner_visibility_updated ON prompts (owner_id, visibility, updated_at)`,
 	}
 	if b.driver == "postgres" {
 		schema = []string{
@@ -354,6 +362,14 @@ func (b *DatabaseBackend) init() error {
 			`CREATE TABLE IF NOT EXISTS json_documents (name TEXT PRIMARY KEY, data TEXT NOT NULL, updated_at TEXT NOT NULL)`,
 			`CREATE TABLE IF NOT EXISTS logs (id SERIAL PRIMARY KEY, created_at TEXT NOT NULL, type TEXT NOT NULL, day TEXT NOT NULL, data TEXT NOT NULL)`,
 			`CREATE INDEX IF NOT EXISTS idx_logs_day_id ON logs (day, id)`,
+			`CREATE TABLE IF NOT EXISTS image_conversations (id TEXT PRIMARY KEY, owner_id TEXT NOT NULL, owner_name TEXT NOT NULL, title TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL, deleted_at TEXT NOT NULL)`,
+			`CREATE INDEX IF NOT EXISTS idx_image_conversations_owner_updated ON image_conversations (owner_id, deleted_at, updated_at)`,
+			`CREATE TABLE IF NOT EXISTS image_conversation_turns (id TEXT PRIMARY KEY, conversation_id TEXT NOT NULL, owner_id TEXT NOT NULL, prompt TEXT NOT NULL, model TEXT NOT NULL, mode TEXT NOT NULL, count INTEGER NOT NULL, size TEXT NOT NULL, quality TEXT NOT NULL, visibility TEXT NOT NULL, status TEXT NOT NULL, error TEXT NOT NULL, reference_images_json TEXT NOT NULL, result_images_json TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL)`,
+			`CREATE INDEX IF NOT EXISTS idx_image_conversation_turns_conversation ON image_conversation_turns (owner_id, conversation_id, created_at)`,
+			`CREATE TABLE IF NOT EXISTS conversation_attachments (id TEXT PRIMARY KEY, owner_id TEXT NOT NULL, conversation_id TEXT NOT NULL, turn_id TEXT NOT NULL, file_name TEXT NOT NULL, mime_type TEXT NOT NULL, size INTEGER NOT NULL, path TEXT NOT NULL, created_at TEXT NOT NULL)`,
+			`CREATE INDEX IF NOT EXISTS idx_conversation_attachments_owner_conversation ON conversation_attachments (owner_id, conversation_id, created_at)`,
+			`CREATE TABLE IF NOT EXISTS prompts (id TEXT PRIMARY KEY, owner_id TEXT NOT NULL, owner_name TEXT NOT NULL, title TEXT NOT NULL, body TEXT NOT NULL, tags_json TEXT NOT NULL, category TEXT NOT NULL, note TEXT NOT NULL, model TEXT NOT NULL, use_case TEXT NOT NULL, visibility TEXT NOT NULL, source_conversation_id TEXT NOT NULL, source_turn_id TEXT NOT NULL, source_image_path TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL)`,
+			`CREATE INDEX IF NOT EXISTS idx_prompts_owner_visibility_updated ON prompts (owner_id, visibility, updated_at)`,
 		}
 	}
 	if b.driver == "mysql" {
@@ -363,6 +379,14 @@ func (b *DatabaseBackend) init() error {
 			`CREATE TABLE IF NOT EXISTS json_documents (name VARCHAR(512) PRIMARY KEY, data LONGTEXT NOT NULL, updated_at TEXT NOT NULL)`,
 			`CREATE TABLE IF NOT EXISTS logs (id INTEGER PRIMARY KEY AUTO_INCREMENT, created_at TEXT NOT NULL, type VARCHAR(64) NOT NULL, day VARCHAR(10) NOT NULL, data LONGTEXT NOT NULL)`,
 			`CREATE INDEX idx_logs_day_id ON logs (day, id)`,
+			`CREATE TABLE IF NOT EXISTS image_conversations (id VARCHAR(128) PRIMARY KEY, owner_id VARCHAR(128) NOT NULL, owner_name TEXT NOT NULL, title TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL, deleted_at TEXT NOT NULL)`,
+			`CREATE INDEX idx_image_conversations_owner_updated ON image_conversations (owner_id, deleted_at(32), updated_at(32))`,
+			`CREATE TABLE IF NOT EXISTS image_conversation_turns (id VARCHAR(128) PRIMARY KEY, conversation_id VARCHAR(128) NOT NULL, owner_id VARCHAR(128) NOT NULL, prompt LONGTEXT NOT NULL, model TEXT NOT NULL, mode VARCHAR(32) NOT NULL, count INTEGER NOT NULL, size TEXT NOT NULL, quality TEXT NOT NULL, visibility VARCHAR(32) NOT NULL, status VARCHAR(32) NOT NULL, error TEXT NOT NULL, reference_images_json LONGTEXT NOT NULL, result_images_json LONGTEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL)`,
+			`CREATE INDEX idx_image_conversation_turns_conversation ON image_conversation_turns (owner_id, conversation_id, created_at(32))`,
+			`CREATE TABLE IF NOT EXISTS conversation_attachments (id VARCHAR(128) PRIMARY KEY, owner_id VARCHAR(128) NOT NULL, conversation_id VARCHAR(128) NOT NULL, turn_id VARCHAR(128) NOT NULL, file_name TEXT NOT NULL, mime_type TEXT NOT NULL, size INTEGER NOT NULL, path TEXT NOT NULL, created_at TEXT NOT NULL)`,
+			`CREATE INDEX idx_conversation_attachments_owner_conversation ON conversation_attachments (owner_id, conversation_id, created_at(32))`,
+			`CREATE TABLE IF NOT EXISTS prompts (id VARCHAR(128) PRIMARY KEY, owner_id VARCHAR(128) NOT NULL, owner_name TEXT NOT NULL, title TEXT NOT NULL, body LONGTEXT NOT NULL, tags_json LONGTEXT NOT NULL, category TEXT NOT NULL, note TEXT NOT NULL, model TEXT NOT NULL, use_case TEXT NOT NULL, visibility VARCHAR(32) NOT NULL, source_conversation_id TEXT NOT NULL, source_turn_id TEXT NOT NULL, source_image_path TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL)`,
+			`CREATE INDEX idx_prompts_owner_visibility_updated ON prompts (owner_id, visibility, updated_at(32))`,
 		}
 	}
 	for _, stmt := range schema {

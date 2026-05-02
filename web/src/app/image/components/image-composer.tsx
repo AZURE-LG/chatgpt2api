@@ -7,6 +7,7 @@ import {
   CircleHelp,
   Image as ImageIcon,
   ImagePlus,
+  Library,
   MessageCircle,
   Plus,
   SlidersHorizontal,
@@ -62,6 +63,7 @@ type ImageComposerProps = {
   onImageQualityChange: (value: ImageQuality) => void;
   onSubmit: () => void | Promise<void>;
   onOpenPromptMarket: () => void;
+  onOpenPromptLibrary: () => void;
   onReferenceImageChange: (files: File[]) => void | Promise<void>;
   onRemoveReferenceImage: (index: number) => void;
 };
@@ -111,6 +113,7 @@ export function ImageComposer({
   onImageQualityChange,
   onSubmit,
   onOpenPromptMarket,
+  onOpenPromptLibrary,
   onReferenceImageChange,
   onRemoveReferenceImage,
 }: ImageComposerProps) {
@@ -510,6 +513,17 @@ export function ImageComposer({
                 >
                   <Store className="size-5 sm:size-3.5" />
                   <span className="hidden sm:inline">市场</span>
+                </Button>
+                <Button
+                  type="button"
+                  variant="outline"
+                  className="size-9 shrink-0 rounded-full border-transparent bg-transparent px-0 text-[#686b73] shadow-none hover:bg-black/[0.05] dark:text-muted-foreground dark:hover:bg-accent/60 dark:hover:text-foreground sm:h-8 sm:size-auto sm:border-[#e5e7eb] sm:bg-white sm:px-3 sm:text-xs sm:font-medium sm:text-[#45515e] sm:dark:border-border sm:dark:bg-background/70 sm:dark:text-muted-foreground"
+                  onClick={onOpenPromptLibrary}
+                  aria-label="我的提示词库"
+                  title="我的提示词库"
+                >
+                  <Library className="size-5 sm:size-3.5" />
+                  <span className="hidden sm:inline">提示词</span>
                 </Button>
                 {composerMode === "image" ? (
                   <Popover open={isImageSettingsOpen} onOpenChange={handleImageSettingsOpenChange}>

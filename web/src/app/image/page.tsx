@@ -1,7 +1,8 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
-import { History, ImagePlus, LoaderCircle, Plus, Trash2, X } from "lucide-react";
+import { History, ImagePlus, LoaderCircle, Plus, Search, Trash2, X } from "lucide-react";
+import { useNavigate } from "react-router-dom";
 import { toast } from "sonner";
 
 import { ImageComposer } from "@/app/image/components/image-composer";
@@ -65,6 +66,12 @@ import {
 } from "@/lib/api";
 import { clearImageManagerCache } from "@/lib/image-manager-cache";
 import { getManagedImagePathFromUrl } from "@/lib/image-path";
+import {
+  fetchConversationAttachmentFile,
+  fetchPrompts,
+  uploadConversationAttachment,
+  type PromptLibraryItem,
+} from "@/lib/image-workspace-api";
 import { cn } from "@/lib/utils";
 import { useAuthGuard } from "@/lib/use-auth-guard";
 import {
@@ -104,6 +111,14 @@ const DEFAULT_IMAGE_QUALITY: ImageQuality = "high";
 const activeConversationQueueIds = new Set<string>();
 const EMPTY_IMAGE_ASPECT_RATIO_SELECT_VALUE = "__empty_aspect_ratio__";
 const MISSING_RECOVERABLE_TASK_ID_ERROR = "页面刷新或任务中断，未找到可恢复的任务 ID";
+const PENDING_PROMPT_STORAGE_KEY = "chatgpt2api:pending_prompt";
+
+function promptLibraryMeta(item: PromptLibraryItem) {
+  return [item.category, item.model, item.use_case, item.tags.join(" / ")]
+    .map((value) => value.trim())
+    .filter(Boolean)
+    .join(" · ");
+}
 
 type ComposerMode = "chat" | "image";
 
@@ -169,6 +184,21 @@ function dataUrlToFile(dataUrl: string, fileName: string, mimeType?: string) {
     bytes[index] = binary.charCodeAt(index);
   }
   return new File([bytes], fileName, { type: mimeType || matchedMimeType || "image/png" });
+}
+
+async function referenceImageToFile(image: StoredReferenceImage, index: number, fallbackPrefix: string) {
+  const fileName = image.name || `${fallbackPrefix}-${index + 1}.png`;
+  if (image.dataUrl?.startsWith("data:")) {
+    return dataUrlToFile(image.dataUrl, fileName, image.type);
+  }
+  if (image.url?.startsWith("/conversation-attachments/")) {
+    return fetchConversationAttachmentFile(image.url, fileName, image.type);
+  }
+  const source = image.dataUrl || image.url;
+  if (!source) {
+    throw new Error("参考图地址无效");
+  }
+  return fetchImageAsFile(source, fileName);
 }
 
 function buildReferenceImageFromResult(image: StoredImage, fileName: string): StoredReferenceImage | null {
@@ -732,6 +762,7 @@ async function recoverConversationHistory(items: ImageConversation[]) {
 
 
 function ImagePageContent() {
+  const navigate = useNavigate();
   const isSubmitDispatchingRef = useRef(false);
   const retryingImageIdsRef = useRef(new Set<string>());
   const cancelledTurnIdsRef = useRef(new Set<string>());
@@ -753,6 +784,11 @@ function ImagePageContent() {
   const [defaultImageVisibility, setDefaultImageVisibility] = useState<ImageVisibility>("private");
   const [isHistoryOpen, setIsHistoryOpen] = useState(false);
   const [isPromptMarketOpen, setIsPromptMarketOpen] = useState(false);
+  const [isPromptLibraryOpen, setIsPromptLibraryOpen] = useState(false);
+  const [promptLibraryItems, setPromptLibraryItems] = useState<PromptLibraryItem[]>([]);
+  const [promptLibrarySearch, setPromptLibrarySearch] = useState("");
+  const [isPromptLibraryLoading, setIsPromptLibraryLoading] = useState(false);
+  const [promptLibraryError, setPromptLibraryError] = useState("");
   const [referenceImages, setReferenceImages] = useState<StoredReferenceImage[]>([]);
   const [conversations, setConversations] = useState<ImageConversation[]>([]);
   const [selectedConversationId, setSelectedConversationId] = useState<string | null>(null);
@@ -821,6 +857,60 @@ function ImagePageContent() {
   useEffect(() => {
     conversationsRef.current = conversations;
   }, [conversations]);
+
+  useEffect(() => {
+    if (typeof window === "undefined") {
+      return;
+    }
+    const pendingPrompt = window.sessionStorage.getItem(PENDING_PROMPT_STORAGE_KEY);
+    if (!pendingPrompt) {
+      return;
+    }
+    window.sessionStorage.removeItem(PENDING_PROMPT_STORAGE_KEY);
+    promptApplyRequestIdRef.current += 1;
+    setSelectedConversationId(null);
+    setComposerMode("image");
+    setImagePrompt(pendingPrompt);
+    setReferenceImages([]);
+    textareaRef.current?.focus();
+  }, []);
+
+  useEffect(() => {
+    if (!isPromptLibraryOpen) {
+      return;
+    }
+
+    let active = true;
+    const timer = window.setTimeout(() => {
+      setIsPromptLibraryLoading(true);
+      setPromptLibraryError("");
+      void fetchPrompts({ scope: "visible", q: promptLibrarySearch.trim() })
+        .then((items) => {
+          if (!active) {
+            return;
+          }
+          setPromptLibraryItems(items);
+        })
+        .catch((error) => {
+          if (!active) {
+            return;
+          }
+          const message = error instanceof Error ? error.message : "加载提示词失败";
+          setPromptLibraryError(message);
+          toast.error(message);
+        })
+        .finally(() => {
+          if (active) {
+            setIsPromptLibraryLoading(false);
+          }
+        });
+    }, 180);
+
+    return () => {
+      active = false;
+      window.clearTimeout(timer);
+    };
+  }, [isPromptLibraryOpen, promptLibrarySearch]);
 
   useEffect(() => {
     const node = composerDockRef.current;
@@ -1034,7 +1124,7 @@ function ImagePageContent() {
     }
   }, [conversations, selectedConversationId]);
 
-  const persistConversation = async (conversation: ImageConversation) => {
+  const persistConversation = useCallback(async (conversation: ImageConversation) => {
     const nextConversations = sortImageConversations([
       conversation,
       ...conversationsRef.current.filter((item) => item.id !== conversation.id),
@@ -1042,7 +1132,7 @@ function ImagePageContent() {
     conversationsRef.current = nextConversations;
     setConversations(nextConversations);
     await saveImageConversation(conversation);
-  };
+  }, []);
 
   const updateConversation = useCallback(
     async (
@@ -1064,6 +1154,26 @@ function ImagePageContent() {
     },
     [],
   );
+
+  const ensureAttachmentConversation = useCallback(async () => {
+    const existing = selectedConversationId
+      ? conversationsRef.current.find((conversation) => conversation.id === selectedConversationId)
+      : null;
+    if (existing) {
+      return existing.id;
+    }
+    const now = new Date().toISOString();
+    const conversation: ImageConversation = {
+      id: createId(),
+      title: buildConversationTitle(imagePrompt) || "未命名会话",
+      createdAt: now,
+      updatedAt: now,
+      turns: [],
+    };
+    setSelectedConversationId(conversation.id);
+    await persistConversation(conversation);
+    return conversation.id;
+  }, [imagePrompt, persistConversation, selectedConversationId]);
 
   const updateTurnProgress = useCallback(
     (conversationId: string, turnId: string, updates: Omit<ImageTurnProgress, "startedAt"> & { startedAt?: number }) => {
@@ -1192,6 +1302,19 @@ function ImagePageContent() {
     }
   }, []);
 
+  const handleApplyLibraryPrompt = useCallback((item: PromptLibraryItem) => {
+    const body = item.body.trim();
+    if (!body) {
+      toast.error("当前提示词为空");
+      return;
+    }
+    promptApplyRequestIdRef.current += 1;
+    setImagePrompt(body);
+    setIsPromptLibraryOpen(false);
+    textareaRef.current?.focus();
+    toast.success("已选择提示词");
+  }, []);
+
   const handleDeleteConversation = async (id: string) => {
     const nextConversations = conversations.filter((item) => item.id !== id);
     conversationsRef.current = nextConversations;
@@ -1256,13 +1379,22 @@ function ImagePageContent() {
     promptApplyRequestIdRef.current += 1;
 
     try {
+      const conversationId = await ensureAttachmentConversation();
       const previews = await Promise.all(
-        files.map(async (file) => ({
-          name: file.name,
-          type: file.type || "image/png",
-          dataUrl: await readFileAsDataUrl(file),
-          source: "upload" as const,
-        })),
+        files.map(async (file) => {
+          const [preview, attachment] = await Promise.all([
+            readFileAsDataUrl(file),
+            uploadConversationAttachment(conversationId, file),
+          ]);
+          return {
+            id: attachment.id,
+            name: attachment.name || file.name,
+            type: attachment.type || file.type || "image/png",
+            dataUrl: preview,
+            url: attachment.url,
+            source: "upload" as const,
+          };
+        }),
       );
 
       setComposerMode("image");
@@ -1274,7 +1406,7 @@ function ImagePageContent() {
       const message = error instanceof Error ? error.message : "读取参考图失败";
       toast.error(message);
     }
-  }, []);
+  }, [ensureAttachmentConversation]);
 
   const handleReferenceImageChange = useCallback(
     async (files: File[]) => {
@@ -1579,8 +1711,10 @@ function ImagePageContent() {
                 ? "正在读取参考图并准备上传"
                 : "正在创建图片生成任务",
         });
-        const referenceFiles = activeTurn.referenceImages.map((image, index) =>
-          dataUrlToFile(image.dataUrl, image.name || `${activeTurn.id}-${index + 1}.png`, image.type),
+        const referenceFiles = await Promise.all(
+          activeTurn.referenceImages.map((image, index) =>
+            referenceImageToFile(image, index, activeTurn.id),
+          ),
         );
         if (usesReferenceImages(activeTurn.mode) && referenceFiles.length === 0) {
           throw new Error("未找到可用的参考图");
@@ -1602,9 +1736,14 @@ function ImagePageContent() {
           },
           [],
         );
+        const taskOptions = {
+          visibility: activeTurn.visibility || "private",
+          conversationId,
+          turnId: activeTurn.id,
+        } as const;
         const submitTaskGroup = (group: { taskId: string; count: number }) => {
           if (activeTurn.mode === "chat") {
-            return createChatCompletionTask(group.taskId, activeTurn.prompt, activeTurn.model, taskMessages);
+            return createChatCompletionTask(group.taskId, activeTurn.prompt, activeTurn.model, taskMessages, taskOptions);
           }
           if (usesReferenceImages(activeTurn.mode)) {
             return createImageEditTask(
@@ -1616,7 +1755,7 @@ function ImagePageContent() {
               activeTurn.quality || DEFAULT_IMAGE_QUALITY,
               group.count,
               taskMessages,
-              activeTurn.visibility || "private",
+              taskOptions,
             );
           }
           return createImageGenerationTask(
@@ -1627,7 +1766,7 @@ function ImagePageContent() {
             activeTurn.quality || DEFAULT_IMAGE_QUALITY,
             group.count,
             taskMessages,
-            activeTurn.visibility || "private",
+            taskOptions,
           );
         };
         updateTurnProgress(conversationId, activeTurn.id, {
@@ -2543,6 +2682,7 @@ function ImagePageContent() {
                 onImageQualityChange={setImageQuality}
                 onSubmit={handleSubmit}
                 onOpenPromptMarket={() => setIsPromptMarketOpen(true)}
+                onOpenPromptLibrary={() => setIsPromptLibraryOpen(true)}
                 onReferenceImageChange={handleReferenceImageChange}
                 onRemoveReferenceImage={handleRemoveReferenceImage}
               />
@@ -2556,6 +2696,72 @@ function ImagePageContent() {
         onOpenChange={setIsPromptMarketOpen}
         onApplyPrompt={handleApplyMarketPrompt}
       />
+
+      <Dialog open={isPromptLibraryOpen} onOpenChange={setIsPromptLibraryOpen}>
+        <DialogContent className="flex max-h-[82dvh] w-[min(92vw,720px)] flex-col overflow-hidden rounded-[28px] p-0">
+          <DialogHeader className="px-6 pt-6 pb-3">
+            <DialogTitle>我的提示词库</DialogTitle>
+            <DialogDescription>可见范围内的提示词</DialogDescription>
+          </DialogHeader>
+          <div className="px-6 pb-3">
+            <div className="relative">
+              <Search className="pointer-events-none absolute top-1/2 left-3 size-4 -translate-y-1/2 text-muted-foreground" />
+              <Input
+                value={promptLibrarySearch}
+                onChange={(event) => setPromptLibrarySearch(event.target.value)}
+                placeholder="搜索标题、正文、标签"
+                className="h-10 rounded-full border-border bg-background pl-9"
+              />
+            </div>
+          </div>
+          <div className="min-h-0 flex-1 overflow-y-auto px-6 pb-6">
+            {isPromptLibraryLoading && promptLibraryItems.length === 0 ? (
+              <div className="flex min-h-48 items-center justify-center text-sm text-muted-foreground">
+                <LoaderCircle className="mr-2 size-4 animate-spin" />
+                加载中...
+              </div>
+            ) : promptLibraryError && promptLibraryItems.length === 0 ? (
+              <div className="flex min-h-48 items-center justify-center rounded-2xl border border-dashed border-border bg-muted/40 px-4 text-center text-sm text-muted-foreground">
+                {promptLibraryError}
+              </div>
+            ) : promptLibraryItems.length === 0 ? (
+              <div className="flex min-h-48 items-center justify-center rounded-2xl border border-dashed border-border bg-muted/40 px-4 text-center text-sm text-muted-foreground">
+                暂无匹配提示词
+              </div>
+            ) : (
+              <div className="grid gap-2">
+                {promptLibraryItems.map((item) => {
+                  const meta = promptLibraryMeta(item);
+                  return (
+                    <button
+                      key={item.id}
+                      type="button"
+                      className="group w-full rounded-2xl border border-border bg-background p-3 text-left transition hover:border-[#1456f0]/30 hover:bg-[#f6f9ff] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring dark:hover:bg-sky-950/20"
+                      onClick={() => handleApplyLibraryPrompt(item)}
+                      disabled={!item.body.trim()}
+                    >
+                      <div className="flex items-start justify-between gap-3">
+                        <div className="min-w-0">
+                          <div className="truncate text-sm font-semibold text-foreground">{item.title}</div>
+                          {meta ? (
+                            <div className="mt-1 truncate text-xs text-muted-foreground">{meta}</div>
+                          ) : null}
+                        </div>
+                        <span className="shrink-0 rounded-full bg-muted px-2 py-0.5 text-[11px] font-medium text-muted-foreground">
+                          {item.visibility === "public" ? "公开" : "私有"}
+                        </span>
+                      </div>
+                      <div className="mt-2 max-h-16 overflow-hidden whitespace-pre-wrap break-words text-xs leading-5 text-muted-foreground group-hover:text-foreground">
+                        {item.body}
+                      </div>
+                    </button>
+                  );
+                })}
+              </div>
+            )}
+          </div>
+        </DialogContent>
+      </Dialog>
 
       <ImageLightbox
         images={lightboxImages}

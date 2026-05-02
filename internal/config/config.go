@@ -340,6 +340,12 @@ func (s *Store) ImageMetadataDir() string {
 	return path
 }
 
+func (s *Store) ConversationAttachmentsDir() string {
+	path := filepath.Join(s.DataDir, "conversation_attachments")
+	_ = os.MkdirAll(path, 0o755)
+	return path
+}
+
 func (s *Store) LoginPageImagesDir() string {
 	path := filepath.Join(s.DataDir, "login_page_images")
 	_ = os.MkdirAll(path, 0o755)

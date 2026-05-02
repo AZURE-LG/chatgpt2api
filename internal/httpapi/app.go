@@ -44,6 +44,7 @@ type App struct {
 	proxy      *service.ProxyService
 	engine     *protocol.Engine
 	images     *service.ImageService
+	workspace  *service.ImageWorkspaceService
 	tasks      *service.ImageTaskService
 	announce   *service.AnnouncementService
 	cpa        *service.CPAConfig
@@ -85,7 +86,15 @@ func NewApp() (*App, error) {
 	}
 	documentStore, _ := storageBackend.(storage.JSONDocumentBackend)
 	engine := &protocol.Engine{Accounts: accounts, Config: cfg, Storage: documentStore, Proxy: proxy, Logger: logger}
-	app := &App{config: cfg, auth: auth, accounts: accounts, logs: logs, logger: logger, proxy: proxy, engine: engine, images: service.NewImageService(cfg, storageBackend), announce: service.NewAnnouncementService(cfg.DataDir, storageBackend), cpa: service.NewCPAConfig(cfg.DataDir, storageBackend), sub2: service.NewSub2APIConfig(cfg.DataDir, storageBackend), update: newUpdateService(cfg), cancel: cancel}
+	var workspace *service.ImageWorkspaceService
+	if _, ok := storage.ImageWorkspaceStoreFromBackend(storageBackend); ok {
+		workspace, err = service.NewImageWorkspaceService(storageBackend, cfg.ConversationAttachmentsDir())
+		if err != nil {
+			cancel()
+			return nil, err
+		}
+	}
+	app := &App{config: cfg, auth: auth, accounts: accounts, logs: logs, logger: logger, proxy: proxy, engine: engine, images: service.NewImageService(cfg, storageBackend), workspace: workspace, announce: service.NewAnnouncementService(cfg.DataDir, storageBackend), cpa: service.NewCPAConfig(cfg.DataDir, storageBackend), sub2: service.NewSub2APIConfig(cfg.DataDir, storageBackend), update: newUpdateService(cfg), cancel: cancel}
 	app.cpaImport = service.NewCPAImportService(app.cpa, accounts, proxy)
 	app.sub2Import = service.NewSub2APIService(app.sub2, accounts)
 	app.register = service.NewRegisterService(cfg.DataDir, accounts, storageBackend)
@@ -932,6 +941,8 @@ func readMultipartImageBody(r *http.Request) (map[string]any, []protocol.Uploade
 		"size":            firstForm(r.MultipartForm, "size"),
 		"quality":         firstForm(r.MultipartForm, "quality"),
 		"visibility":      firstForm(r.MultipartForm, "visibility"),
+		"conversation_id": firstForm(r.MultipartForm, "conversation_id"),
+		"turn_id":         firstForm(r.MultipartForm, "turn_id"),
 		"response_format": firstNonEmpty(firstForm(r.MultipartForm, "response_format"), "b64_json"),
 		"stream":          util.ToBool(firstForm(r.MultipartForm, "stream")),
 	}
@@ -1154,6 +1165,7 @@ func (a *App) runLoggedImageTask(ctx context.Context, identity service.Identity,
 	result, err := run(ctx, payload)
 	urls := collectURLs(result)
 	a.recordGeneratedImages(identity, urls, util.Clean(payload["visibility"]))
+	a.recordGeneratedImagePromptMetadata(identity, payload, result, summary)
 	if err != nil {
 		a.logCall(identity, summary, http.MethodPost, endpoint, model, start, "failed", protocolErrorHTTPStatus(err), err.Error(), urls)
 		return result, err
@@ -1165,6 +1177,45 @@ func (a *App) runLoggedImageTask(ctx context.Context, identity service.Identity,
 	}
 	a.logCall(identity, summary, http.MethodPost, endpoint, model, start, "success", http.StatusOK, "", urls)
 	return result, nil
+}
+
+func (a *App) recordGeneratedImagePromptMetadata(identity service.Identity, payload map[string]any, result map[string]any, mode string) {
+	if a.images == nil {
+		return
+	}
+	scope := service.ImageAccessScope{OwnerID: identityScope(identity)}
+	prompt := util.Clean(payload["prompt"])
+	model := firstNonEmpty(util.Clean(payload["model"]), util.ImageModelAuto)
+	size := util.Clean(payload["size"])
+	quality := util.Clean(payload["quality"])
+	conversationID := util.Clean(payload["conversation_id"])
+	turnID := util.Clean(payload["turn_id"])
+	taskID := util.Clean(payload["client_task_id"])
+	taskMode := "generate"
+	if mode == "图生图" {
+		taskMode = "edit"
+	}
+	for _, item := range util.AsMapSlice(result["data"]) {
+		url := util.Clean(item["url"])
+		if url == "" {
+			continue
+		}
+		_, err := a.images.UpdateImagePromptMetadata(service.ImagePromptMetadataUpdate{
+			Path:           url,
+			Prompt:         prompt,
+			RevisedPrompt:  util.Clean(item["revised_prompt"]),
+			Model:          model,
+			Size:           size,
+			Quality:        quality,
+			Mode:           taskMode,
+			ConversationID: conversationID,
+			TurnID:         turnID,
+			TaskID:         taskID,
+		}, scope)
+		if err != nil && a.logger != nil {
+			a.logger.Warning("image prompt metadata write failed", "error", err.Error(), "url", url)
+		}
+	}
 }
 
 func (a *App) runLoggedChatTask(ctx context.Context, identity service.Identity, payload map[string]any) (map[string]any, error) {

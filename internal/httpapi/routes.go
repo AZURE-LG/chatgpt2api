@@ -896,7 +896,11 @@ func (a *App) handleCreationTasks(w http.ResponseWriter, r *http.Request) {
 	}
 	if r.URL.Path == "/api/creation-tasks/image-generations" && r.Method == http.MethodPost {
 		body, _ := readJSONMap(r)
-		task, err := a.tasks.SubmitGeneration(r.Context(), identity, util.Clean(body["client_task_id"]), util.Clean(body["prompt"]), firstNonEmpty(util.Clean(body["model"]), util.ImageModelAuto), util.Clean(body["size"]), util.Clean(body["quality"]), a.resolveImageBaseURL(r), util.ToInt(body["n"], 1), body["messages"], util.Clean(body["visibility"]))
+		options, ok := a.creationTaskSubmitOptions(w, identity, util.Clean(body["visibility"]), util.Clean(body["conversation_id"]), util.Clean(body["turn_id"]))
+		if !ok {
+			return
+		}
+		task, err := a.tasks.SubmitGeneration(r.Context(), identity, util.Clean(body["client_task_id"]), util.Clean(body["prompt"]), firstNonEmpty(util.Clean(body["model"]), util.ImageModelAuto), util.Clean(body["size"]), util.Clean(body["quality"]), a.resolveImageBaseURL(r), util.ToInt(body["n"], 1), body["messages"], options)
 		if err != nil {
 			writeCreationTaskSubmitError(w, err)
 			return
@@ -906,7 +910,11 @@ func (a *App) handleCreationTasks(w http.ResponseWriter, r *http.Request) {
 	}
 	if r.URL.Path == "/api/creation-tasks/chat-completions" && r.Method == http.MethodPost {
 		body, _ := readJSONMap(r)
-		task, err := a.tasks.SubmitChat(r.Context(), identity, util.Clean(body["client_task_id"]), util.Clean(body["prompt"]), firstNonEmpty(util.Clean(body["model"]), util.ImageModelAuto), body["messages"])
+		options, ok := a.creationTaskSubmitOptions(w, identity, util.Clean(body["visibility"]), util.Clean(body["conversation_id"]), util.Clean(body["turn_id"]))
+		if !ok {
+			return
+		}
+		task, err := a.tasks.SubmitChat(r.Context(), identity, util.Clean(body["client_task_id"]), util.Clean(body["prompt"]), firstNonEmpty(util.Clean(body["model"]), util.ImageModelAuto), body["messages"], options)
 		if err != nil {
 			writeCreationTaskSubmitError(w, err)
 			return
@@ -920,7 +928,11 @@ func (a *App) handleCreationTasks(w http.ResponseWriter, r *http.Request) {
 			util.WriteError(w, http.StatusBadRequest, err.Error())
 			return
 		}
-		task, err := a.tasks.SubmitEdit(r.Context(), identity, util.Clean(body["client_task_id"]), util.Clean(body["prompt"]), firstNonEmpty(util.Clean(body["model"]), util.ImageModelAuto), util.Clean(body["size"]), util.Clean(body["quality"]), a.resolveImageBaseURL(r), images, util.ToInt(body["n"], 1), body["messages"], util.Clean(body["visibility"]))
+		options, ok := a.creationTaskSubmitOptions(w, identity, util.Clean(body["visibility"]), util.Clean(body["conversation_id"]), util.Clean(body["turn_id"]))
+		if !ok {
+			return
+		}
+		task, err := a.tasks.SubmitEdit(r.Context(), identity, util.Clean(body["client_task_id"]), util.Clean(body["prompt"]), firstNonEmpty(util.Clean(body["model"]), util.ImageModelAuto), util.Clean(body["size"]), util.Clean(body["quality"]), a.resolveImageBaseURL(r), images, util.ToInt(body["n"], 1), body["messages"], options)
 		if err != nil {
 			writeCreationTaskSubmitError(w, err)
 			return
@@ -929,6 +941,26 @@ func (a *App) handleCreationTasks(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	http.NotFound(w, r)
+}
+
+func (a *App) creationTaskSubmitOptions(w http.ResponseWriter, identity service.Identity, visibility, conversationID, turnID string) (service.ImageTaskSubmitOptions, bool) {
+	options := service.ImageTaskSubmitOptions{
+		Visibility:     visibility,
+		ConversationID: conversationID,
+		TurnID:         turnID,
+	}
+	if conversationID == "" && turnID == "" {
+		return options, true
+	}
+	if a.workspace == nil {
+		util.WriteError(w, http.StatusBadRequest, "image workspace requires database storage backend")
+		return service.ImageTaskSubmitOptions{}, false
+	}
+	if err := a.workspace.ValidateConversationTurn(identity, conversationID, turnID); err != nil {
+		util.WriteError(w, http.StatusNotFound, "conversation not found")
+		return service.ImageTaskSubmitOptions{}, false
+	}
+	return options, true
 }
 
 func writeCreationTaskSubmitError(w http.ResponseWriter, err error) {

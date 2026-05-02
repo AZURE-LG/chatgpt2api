@@ -8,6 +8,7 @@ import HomePage from "@/app/page";
 import LoginPage from "@/app/login/page";
 import LogsPage from "@/app/logs/page";
 import ProfilePage from "@/app/profile/page";
+import PromptsPage from "@/app/prompts/page";
 import RBACPage from "@/app/rbac/page";
 import RegisterPage from "@/app/register/page";
 import SettingsPage from "@/app/settings/page";
@@ -26,6 +27,7 @@ export const appRoutes: AppRouteConfig[] = [
   { path: "/accounts", element: <AccountsPage />, requiredPath: "/accounts" },
   { path: "/register", element: <RegisterPage />, requiredPath: "/register" },
   { path: "/image-manager", element: <ImageManagerPage />, requiredPath: "/image-manager" },
+  { path: "/prompts", element: <PromptsPage />, requiredPath: "/prompts" },
   { path: "/users", element: <UsersPage />, requiredPath: "/users" },
   { path: "/profile", element: <ProfilePage />, requiredPath: "/profile" },
   { path: "/rbac", element: <RBACPage />, requiredPath: "/rbac" },

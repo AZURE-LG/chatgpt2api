@@ -51,6 +51,19 @@ func TestImageTaskServiceIdempotencyOwnerIsolationAndCompletion(t *testing.T) {
 	}
 }
 
+func TestImageTaskStoresConversationFields(t *testing.T) {
+	svc := NewImageTaskService(filepath.Join(t.TempDir(), "tasks.json"), func(context.Context, Identity, map[string]any) (map[string]any, error) {
+		return map[string]any{"data": []map[string]any{{"url": "http://example.test/images/a.png"}}}, nil
+	}, nil, nil, func() int { return 7 })
+	task, err := svc.SubmitGeneration(context.Background(), Identity{Role: AuthRoleUser, OwnerID: "user-1"}, "task-1", "提示词", "gpt-image-2", "1024x1024", "high", "http://example.test", 1, nil, ImageTaskSubmitOptions{Visibility: "private", ConversationID: "conv-1", TurnID: "turn-1"})
+	if err != nil {
+		t.Fatalf("SubmitGeneration() error = %v", err)
+	}
+	if task["conversation_id"] != "conv-1" || task["turn_id"] != "turn-1" {
+		t.Fatalf("task = %#v, want conversation fields", task)
+	}
+}
+
 func TestImageTaskServiceUsesOwnerIDAroundCredentialRotation(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "image_tasks.json")
 	handlerCalls := make(chan map[string]any, 4)

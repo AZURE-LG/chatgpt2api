@@ -53,3 +53,34 @@ func TestAccountPoolPermissionsAreExplicit(t *testing.T) {
 		}
 	}
 }
+
+func TestDefaultUserPermissionIncludesPromptLibrary(t *testing.T) {
+	set := DefaultPermissionSetForRole(AuthRoleUser)
+	if !testStringSliceContains(set.MenuPaths, "/prompts") {
+		t.Fatalf("default user menu paths = %#v, want /prompts", set.MenuPaths)
+	}
+	if !testStringSliceContains(set.APIPermissions, APIPermissionKey("GET", "/api/prompts")) {
+		t.Fatalf("default user api permissions = %#v, want GET /api/prompts", set.APIPermissions)
+	}
+	if !testStringSliceContains(set.APIPermissions, APIPermissionKey("POST", "/api/image-conversations")) {
+		t.Fatalf("default user api permissions = %#v, want POST /api/image-conversations", set.APIPermissions)
+	}
+	if !HasAPIPermission(set, "POST", "/api/image-conversations/conv-1/turns") {
+		t.Fatalf("default user permissions should allow image conversation subtree: %#v", set.APIPermissions)
+	}
+	if !HasAPIPermission(set, "PATCH", "/api/prompts/prompt-1") {
+		t.Fatalf("default user permissions should allow prompt PATCH subtree: %#v", set.APIPermissions)
+	}
+	if !HasAPIPermission(set, "PATCH", "/api/image-conversations/conv-1/turns/turn-1") {
+		t.Fatalf("default user permissions should allow image conversation PATCH subtree: %#v", set.APIPermissions)
+	}
+}
+
+func testStringSliceContains(values []string, target string) bool {
+	for _, value := range values {
+		if value == target {
+			return true
+		}
+	}
+	return false
+}

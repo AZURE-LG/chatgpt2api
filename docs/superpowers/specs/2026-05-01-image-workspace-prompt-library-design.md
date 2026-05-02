@@ -26,6 +26,16 @@
 - 将图片文件本身搬入数据库。
 - 完整替换现有图片元数据系统。
 
+## 落地边界修订
+
+- API 命名统一为 `/api/prompts` 和 `/api/images/prompt-metadata`。不再使用 `/api/prompt-library` 或 `/api/images/metadata`，避免与实现计划和权限目录分叉。
+- 提示词表统一命名为 `prompts`，字段采用 `body`、`model`、`use_case`、`note`。不再使用 `prompt_library_items`、`models_json`、`usage_note` 作为第一版表结构。
+- 会话列表接口默认只返回会话摘要；会话详情接口再返回轮次、附件引用和结果图引用，避免历史变多后列表响应过大。
+- 客户端可以在更新时携带已有 `conversation_id`、`turn_id`，但服务端必须先按 `owner_id + id` 命中后才能更新。新增资源 ID 优先由服务端生成，禁止 `UPSERT id` 直接覆盖其他 owner 的记录。
+- 任务提交时传入的 `conversation_id`、`turn_id` 必须在 HTTP 层提交任务前完成归属校验。校验失败返回 404，不创建任务。
+- 附件第一版必须有结构化记录。轮次中的 `reference_images_json` 只保存展示快照，不能替代 `conversation_attachments` 表的归属、路径和清理能力。
+- 附件 URL 不能假设 `<img src>` 会携带 Bearer token。前端展示附件时应通过带认证的请求读取 blob，再生成 object URL，或后续单独设计受控下载凭证。
+
 ## 总体架构
 
 后端新增三个服务边界：
@@ -97,19 +107,19 @@
 
 真实文件路径由服务端生成，文件名仅作展示。附件读取和引用都必须校验 `owner_id`。
 
-### `prompt_library_items`
+### `prompts`
 
 - `id`
 - `owner_id`
 - `owner_name`
 - `title`
-- `prompt`
+- `body`
 - `visibility`
 - `category`
 - `tags_json`
-- `models_json`
-- `usage_note`
-- `source_type`
+- `note`
+- `model`
+- `use_case`
 - `source_image_path`
 - `source_conversation_id`
 - `source_turn_id`
@@ -142,28 +152,31 @@
 - `GET /api/image-conversations`
 - `POST /api/image-conversations`
 - `GET /api/image-conversations/{id}`
-- `POST /api/image-conversations/{id}`
+- `PATCH /api/image-conversations/{id}`
 - `DELETE /api/image-conversations/{id}`
+- `POST /api/image-conversations/{id}/turns`
+- `PATCH /api/image-conversations/{id}/turns/{turn_id}`
 - `POST /api/image-conversations/{id}/attachments`
 - `DELETE /api/image-conversations/{id}/attachments/{attachment_id}`
 
-普通用户只能操作自己的会话和附件。不存在或无权访问的资源返回 404，避免泄露资源存在性。
+`GET /api/image-conversations` 返回摘要列表，不默认返回完整 turns；`GET /api/image-conversations/{id}` 返回完整会话。普通用户只能操作自己的会话和附件。不存在或无权访问的资源返回 404，避免泄露资源存在性。
 
 ### 提示词库
 
-- `GET /api/prompt-library?scope=mine|public|all&keyword=&category=&tag=`
-- `POST /api/prompt-library`
-- `POST /api/prompt-library/{id}`
-- `DELETE /api/prompt-library/{id}`
-- `POST /api/prompt-library/{id}/copy`
+- `GET /api/prompts?scope=visible|mine|public|all&q=&category=&tag=`
+- `POST /api/prompts`
+- `GET /api/prompts/{id}`
+- `PATCH /api/prompts/{id}`
+- `DELETE /api/prompts/{id}`
+- `POST /api/prompts/{id}/copy`
 
-`scope=all` 仅管理员可用。普通用户复制公开提示词时，创建一条属于当前用户的新私有提示词。
+`scope=visible` 表示“我的私有和公开提示词”，是普通用户默认视图；`scope=all` 仅管理员可用。普通用户复制公开提示词时，创建一条属于当前用户的新私有提示词。
 
 ### 图片元数据
 
-- `PATCH /api/images/metadata`
+- `PATCH /api/images/prompt-metadata`
 
-用于编辑图片 `manual_prompt`，以及必要时修正 `conversation_id`、`turn_id`、`task_id` 等关联字段。普通用户只能编辑自己图片，管理员可编辑所有图片。
+用于编辑图片 `manual_prompt`，以及必要时修正 `conversation_id`、`turn_id`、`task_id` 等关联字段。普通用户只能编辑自己图片，且提交的会话、轮次、提示词关联必须是自己可访问的资源；管理员可编辑所有图片。
 
 ### 创作任务扩展
 
@@ -178,16 +191,17 @@
 - `conversation_id`
 - `turn_id`
 
-后端校验会话和轮次归属。任务完成后，后端把提示词、生成参数、会话 ID、轮次 ID 和任务 ID 写入结果图元数据，并把结果图引用同步到对应轮次。
+后端在提交任务前校验会话和轮次归属。任务完成后，后端把提示词、生成参数、会话 ID、轮次 ID 和任务 ID 写入结果图元数据，并把结果图引用同步到对应轮次。
 
 ## 前端设计
 
 ### 创作台 `/image`
 
 - 左侧历史会话从服务端加载。
+- 左侧历史会话先加载摘要，选中会话后再加载完整 turns。
 - 新建会话时先创建服务端会话，提交轮次时创建或更新服务端轮次。
 - 刷新页面后从服务端恢复会话、轮次、参考图引用、结果图引用和任务状态。
-- 上传参考图时先上传为服务端附件，再把附件引用写入轮次。
+- 上传参考图时先上传为服务端附件，再把附件引用写入轮次。附件预览使用带认证的 fetch 读取 blob，不直接依赖 `<img src>` 访问受保护 URL。
 - 提交任务时传递 `conversation_id` 和 `turn_id`。
 - 任务提交后保留即时 UI 状态，继续轮询任务接口更新结果。
 - 如果会话保存失败，保留当前输入，不清空创作台。
@@ -226,12 +240,14 @@
 
 - 会话和附件严格按 `owner_id` 隔离。
 - 普通用户不能读取、引用、更新、删除其他用户的会话和附件。
+- 普通用户不能通过自带 `conversation_id`、`turn_id` 或附件 ID 覆盖、关联、探测其他用户资源。
 - 普通用户可读取所有公开提示词和自己的私有提示词。
 - 普通用户只能编辑、删除自己的提示词。
 - 管理员可编辑、删除任意公开提示词。
 - 普通用户只能编辑自己图片的 `manual_prompt`。
+- 普通用户修改图片的 `conversation_id`、`turn_id`、`prompt_id` 时，目标资源也必须属于当前用户或是允许读取的公开提示词。
 - 管理员可编辑所有图片元数据。
-- 任务提交时传入的会话和轮次必须属于当前用户。
+- 任务提交时传入的会话和轮次必须属于当前用户，校验失败不创建任务。
 
 ## 错误处理
 
@@ -250,10 +266,11 @@
 后端测试：
 
 - 会话 CRUD、按 `owner_id` 隔离、软删除。
+- 客户端自带会话 ID、轮次 ID 时不能覆盖其他 owner 的记录。
 - 轮次创建、更新、结果图引用和附件引用校验。
-- 附件上传类型限制、大小限制、归属校验。
+- 附件上传类型限制、大小限制、归属校验、附件表记录和删除清理。
 - 提示词 CRUD、公开/私有筛选、公开提示词复制、管理员管理公开提示词。
-- 任务提交携带 `conversation_id`、`turn_id` 时写入任务和图片元数据。
+- 任务提交携带 `conversation_id`、`turn_id` 时先校验归属，再写入任务和图片元数据。
 - 图片元数据手动提示词编辑权限。
 
 前端验证：

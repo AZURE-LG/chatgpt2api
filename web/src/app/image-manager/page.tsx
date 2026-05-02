@@ -1,7 +1,8 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Check, Copy, Download, Eye, Globe2, ImageIcon, LoaderCircle, Lock, MoreHorizontal, RefreshCw, Search, Trash2, X } from "lucide-react";
+import { Check, Copy, Download, Eye, Globe2, ImageIcon, Library, LoaderCircle, Lock, MoreHorizontal, Pencil, RefreshCw, Save, Search, Send, Trash2, X } from "lucide-react";
+import { useNavigate } from "react-router-dom";
 import { toast } from "sonner";
 
 import { DateRangeFilter } from "@/components/date-range-filter";
@@ -20,6 +21,7 @@ import {
 import { Input } from "@/components/ui/input";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Select, SelectContent, SelectGroup, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { Textarea } from "@/components/ui/textarea";
 import {
   deleteManagedImages,
   fetchManagedImages,
@@ -37,8 +39,15 @@ import {
   type ImageGalleryView,
 } from "@/lib/image-manager-cache";
 import { formatImageFileSize } from "@/lib/image-size";
+import { savePrompt, updateImagePromptMetadata } from "@/lib/image-workspace-api";
 import { useAuthGuard } from "@/lib/use-auth-guard";
+import {
+  ACTIVE_IMAGE_CONVERSATION_STORAGE_KEY,
+  IMAGE_ACTIVE_CONVERSATION_REQUEST_EVENT,
+} from "@/store/image-conversations";
 import { hasAPIPermission, type StoredAuthSession } from "@/store/auth";
+
+const PENDING_PROMPT_STORAGE_KEY = "chatgpt2api:pending_prompt";
 
 function getManagedImageFormatLabel(item: ManagedImage) {
   const normalized = (item.name || item.url).split("?")[0]?.match(/\.([a-z0-9]+)$/i)?.[1] || "image";
@@ -97,6 +106,11 @@ type DeleteImageTarget = {
   paths: string[];
 };
 
+type ManualPromptEditTarget = {
+  item: ManagedImage;
+  value: string;
+};
+
 type ImageVisibilityFilter = "all" | ImageVisibility;
 type ImageFormatFilter = "all" | "png" | "jpg" | "webp" | "gif" | "other";
 type ImageOrientationFilter = "all" | "landscape" | "portrait" | "square" | "unknown";
@@ -118,6 +132,66 @@ function getManagedImageFormat(item: ManagedImage) {
 
 function imageOwnerLabel(item: ManagedImage) {
   return item.owner_name?.trim() || "未知用户";
+}
+
+function imagePromptValue(item: ManagedImage) {
+  return item.manual_prompt?.trim() || item.prompt?.trim() || "";
+}
+
+function compactTitleText(value: string, maxLength = 34) {
+  const normalized = value.replace(/\s+/g, " ").trim();
+  if (!normalized) {
+    return "";
+  }
+  return normalized.length > maxLength ? `${normalized.slice(0, maxLength)}...` : normalized;
+}
+
+function formatManagedImageDateLabel(value?: string) {
+  if (!value) {
+    return "";
+  }
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) {
+    return "";
+  }
+  return new Intl.DateTimeFormat("zh-CN", {
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+  }).format(date);
+}
+
+function managedImageFileBaseName(item: ManagedImage) {
+  const sourceName = item.name || item.path.split("/").filter(Boolean).pop() || "";
+  return sourceName.replace(/\.[a-z0-9]+$/i, "");
+}
+
+function buildPromptTitleFromImage(item: ManagedImage) {
+  const promptTitle = compactTitleText(imagePromptValue(item));
+  if (promptTitle) {
+    return `图片提示词：${promptTitle}`;
+  }
+
+  const parts = [item.model, formatManagedImageDateLabel(item.created_at)].filter(Boolean);
+  if (parts.length > 0) {
+    return `图片提示词：${parts.join(" · ")}`;
+  }
+  return "图片提示词";
+}
+
+function buildManagedImageDisplayTitle(item: ManagedImage) {
+  const promptTitle = compactTitleText(imagePromptValue(item));
+  if (promptTitle) {
+    return promptTitle;
+  }
+
+  const metaTitle = [item.model, formatManagedImageDateLabel(item.created_at)].filter(Boolean).join(" · ");
+  if (metaTitle) {
+    return metaTitle;
+  }
+
+  return compactTitleText(managedImageFileBaseName(item), 28) || "图片详情";
 }
 
 function getManagedImageOrientation(item: ManagedImage): ImageOrientationFilter {
@@ -143,6 +217,13 @@ function matchesManagedImageKeyword(item: ManagedImage, keyword: string) {
     item.owner_id,
     item.created_at,
     item.date,
+    item.prompt,
+    item.revised_prompt,
+    item.manual_prompt,
+    item.model,
+    item.conversation_id,
+    item.turn_id,
+    item.task_id,
   ].some((value) => String(value || "").toLowerCase().includes(normalizedKeyword));
 }
 
@@ -167,6 +248,280 @@ function blurFocusedElementInContainer(container: HTMLElement) {
   if (activeElement instanceof HTMLElement && container.contains(activeElement)) {
     activeElement.blur();
   }
+}
+
+function ImageDetailField({ label, value }: { label: string; value?: string | number | null }) {
+  const displayValue = value === undefined || value === null || value === "" ? "未记录" : String(value);
+  return (
+    <div className="min-w-0 rounded-xl bg-muted/55 px-3 py-2">
+      <div className="text-[11px] font-medium text-muted-foreground">{label}</div>
+      <div className="mt-1 break-words text-sm font-medium text-foreground">{displayValue}</div>
+    </div>
+  );
+}
+
+function PromptCopyBox({
+  label,
+  value,
+  emptyLabel,
+  onCopy,
+}: {
+  label: string;
+  value?: string;
+  emptyLabel: string;
+  onCopy: (value: string, label: string) => void | Promise<void>;
+}) {
+  const text = value?.trim() || "";
+  return (
+    <div>
+      <div className="mb-1.5 text-xs font-medium text-muted-foreground">{label}</div>
+      <div className="group relative rounded-xl bg-muted/70 p-3 pr-10 text-sm leading-6 text-foreground">
+        <div className="max-h-36 overflow-y-auto whitespace-pre-wrap break-words">
+          {text || emptyLabel}
+        </div>
+        {text ? (
+          <button
+            type="button"
+            className="absolute top-2 right-2 inline-flex size-7 items-center justify-center rounded-full bg-background text-muted-foreground opacity-0 shadow-sm transition hover:text-foreground group-hover:opacity-100 focus-visible:opacity-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+            onClick={() => void onCopy(text, label)}
+            aria-label={`复制${label}`}
+            title={`复制${label}`}
+          >
+            <Copy className="size-3.5" />
+          </button>
+        ) : null}
+      </div>
+    </div>
+  );
+}
+
+function ImageDetailDialog({
+  item,
+  canDeleteImages,
+  canCreatePrompts,
+  canEditPromptMetadata,
+  canUpdateVisibility,
+  isDeleting,
+  isDownloading,
+  visibilityMutatingPath,
+  promptMetadataMutatingPath,
+  onOpenChange,
+  onCopyPrompt,
+  onCopyImageUrl,
+  onDownload,
+  onOpenOriginal,
+  onEditManualPrompt,
+  onSavePrompt,
+  onApplyPrompt,
+  onOpenConversation,
+  onVisibilityChange,
+  onDelete,
+}: {
+  item: ManagedImage | null;
+  canDeleteImages: boolean;
+  canCreatePrompts: boolean;
+  canEditPromptMetadata: boolean;
+  canUpdateVisibility: boolean;
+  isDeleting: boolean;
+  isDownloading: boolean;
+  visibilityMutatingPath: string | null;
+  promptMetadataMutatingPath: string | null;
+  onOpenChange: (open: boolean) => void;
+  onCopyPrompt: (value: string, label: string) => void | Promise<void>;
+  onCopyImageUrl: (item: ManagedImage) => void | Promise<void>;
+  onDownload: (item: ManagedImage) => void | Promise<void>;
+  onOpenOriginal: (item: ManagedImage) => void;
+  onEditManualPrompt: (item: ManagedImage) => void;
+  onSavePrompt: (item: ManagedImage) => void | Promise<void>;
+  onApplyPrompt: (item: ManagedImage) => void;
+  onOpenConversation: (item: ManagedImage) => void;
+  onVisibilityChange: (item: ManagedImage, visibility: ImageVisibility) => void | Promise<void>;
+  onDelete: (item: ManagedImage) => void;
+}) {
+  if (!item) {
+    return null;
+  }
+
+  const promptText = imagePromptValue(item);
+  const dimensions = item.width && item.height ? `${item.width} x ${item.height}` : "";
+  const sizeLabel = formatImageFileSize(item.size);
+  const isVisibilityMutating = visibilityMutatingPath === item.path;
+  const isPromptMutating = promptMetadataMutatingPath === item.path;
+  const title = buildManagedImageDisplayTitle(item);
+  const fileName = item.name || item.path.split("/").filter(Boolean).pop() || "";
+
+  return (
+    <Dialog open onOpenChange={onOpenChange}>
+      <DialogContent className="flex h-[min(90dvh,820px)] w-[min(96vw,1080px)] max-w-none flex-col overflow-hidden rounded-[28px] p-0">
+        <div className="grid min-h-0 flex-1 grid-cols-1 md:grid-cols-[minmax(0,1.15fr)_minmax(360px,0.85fr)]">
+          <div className="relative h-[46dvh] min-h-[280px] bg-[#111318] md:h-auto md:min-h-0">
+            <img
+              src={item.url}
+              alt={item.name}
+              className="absolute inset-0 h-full w-full object-contain p-4 md:p-6"
+            />
+            <div className="absolute top-3 left-3 flex flex-wrap gap-2">
+              <button
+                type="button"
+                onClick={() => onOpenOriginal(item)}
+                className="inline-flex h-8 items-center gap-1.5 rounded-full bg-white/95 px-3 text-xs font-medium text-stone-800 shadow-sm transition hover:bg-white"
+              >
+                <Eye className="size-3.5" />
+                原图
+              </button>
+              <button
+                type="button"
+                onClick={() => void onDownload(item)}
+                disabled={isDownloading}
+                className="inline-flex h-8 items-center gap-1.5 rounded-full bg-white/95 px-3 text-xs font-medium text-stone-800 shadow-sm transition hover:bg-white disabled:cursor-not-allowed disabled:opacity-70"
+              >
+                {isDownloading ? <LoaderCircle className="size-3.5 animate-spin" /> : <Download className="size-3.5" />}
+                下载
+              </button>
+              <button
+                type="button"
+                onClick={() => void onCopyImageUrl(item)}
+                className="inline-flex h-8 items-center gap-1.5 rounded-full bg-white/95 px-3 text-xs font-medium text-stone-800 shadow-sm transition hover:bg-white"
+              >
+                <Copy className="size-3.5" />
+                地址
+              </button>
+            </div>
+          </div>
+
+          <div className="min-h-0 overflow-y-auto border-l border-border bg-background p-5">
+            <DialogHeader className="gap-2 text-left">
+              <div className="flex items-start justify-between gap-3">
+                <div className="min-w-0">
+                  <DialogTitle className="line-clamp-2 text-lg leading-6">{title}</DialogTitle>
+                  <DialogDescription className="mt-1 break-all text-xs">
+                    {fileName ? `文件：${fileName}` : item.path}
+                  </DialogDescription>
+                </div>
+                <span className={`shrink-0 rounded-full px-2.5 py-1 text-xs font-medium ${imageVisibilityPillClass(item.visibility)}`}>
+                  {imageVisibilityLabel(item.visibility)}
+                </span>
+              </div>
+            </DialogHeader>
+
+            <div className="mt-5 space-y-5">
+              <section className="space-y-2">
+                <div className="text-sm font-semibold text-foreground">图片信息</div>
+                <div className="grid grid-cols-2 gap-2">
+                  <ImageDetailField label="作者" value={imageOwnerLabel(item)} />
+                  <ImageDetailField label="文件名" value={fileName} />
+                  <ImageDetailField label="格式" value={getManagedImageFormatLabel(item)} />
+                  <ImageDetailField label="尺寸" value={dimensions} />
+                  <ImageDetailField label="大小" value={sizeLabel} />
+                  <ImageDetailField label="模型" value={item.model} />
+                  <ImageDetailField label="质量" value={item.quality} />
+                  <ImageDetailField label="模式" value={item.mode} />
+                  <ImageDetailField label="生成尺寸" value={item.image_size} />
+                  <ImageDetailField label="创建时间" value={item.created_at} />
+                  <ImageDetailField label="发布日期" value={item.published_at} />
+                </div>
+              </section>
+
+              <section className="space-y-3">
+                <div className="flex items-center justify-between gap-2">
+                  <div className="flex items-center gap-2 text-sm font-semibold text-foreground">
+                    <Library className="size-4" />
+                    提示词
+                  </div>
+                  <Button
+                    type="button"
+                    size="sm"
+                    variant="outline"
+                    className="h-8 rounded-full"
+                    onClick={() => onEditManualPrompt(item)}
+                    disabled={!canEditPromptMetadata || promptMetadataMutatingPath !== null}
+                  >
+                    <Pencil className="size-3.5" />
+                    手动提示词
+                  </Button>
+                </div>
+                <PromptCopyBox label="原始提示词" value={item.prompt} emptyLabel="未记录" onCopy={onCopyPrompt} />
+                <PromptCopyBox label="手动提示词" value={item.manual_prompt} emptyLabel="未填写" onCopy={onCopyPrompt} />
+              </section>
+
+              <section className="space-y-2">
+                <div className="text-sm font-semibold text-foreground">关联信息</div>
+                <div className="grid gap-2">
+                  <ImageDetailField label="任务 ID" value={item.task_id} />
+                  <ImageDetailField label="会话 ID" value={item.conversation_id} />
+                  <ImageDetailField label="轮次 ID" value={item.turn_id} />
+                </div>
+              </section>
+            </div>
+
+            <DialogFooter className="mt-6 flex-col gap-2 border-t border-border pt-4 sm:flex-col">
+              <div className="grid w-full grid-cols-2 gap-2">
+                {canUpdateVisibility ? (
+                  <Button
+                    type="button"
+                    variant="outline"
+                    className="rounded-xl"
+                    onClick={() => void onVisibilityChange(item, item.visibility === "public" ? "private" : "public")}
+                    disabled={visibilityMutatingPath !== null || isDeleting}
+                  >
+                    {isVisibilityMutating ? (
+                      <LoaderCircle className="size-4 animate-spin" />
+                    ) : item.visibility === "public" ? (
+                      <Lock className="size-4" />
+                    ) : (
+                      <Globe2 className="size-4" />
+                    )}
+                    {item.visibility === "public" ? "取消公开" : "公开"}
+                  </Button>
+                ) : null}
+                <Button
+                  type="button"
+                  variant="outline"
+                  className="rounded-xl"
+                  onClick={() => void onSavePrompt(item)}
+                  disabled={!canCreatePrompts || !promptText || promptMetadataMutatingPath !== null}
+                >
+                  {isPromptMutating ? <LoaderCircle className="size-4 animate-spin" /> : <Save className="size-4" />}
+                  存入库
+                </Button>
+                <Button
+                  type="button"
+                  className="rounded-xl"
+                  onClick={() => onApplyPrompt(item)}
+                  disabled={!promptText}
+                >
+                  <Send className="size-4" />
+                  应用
+                </Button>
+                <Button
+                  type="button"
+                  variant="outline"
+                  className="rounded-xl"
+                  onClick={() => onOpenConversation(item)}
+                  disabled={!item.conversation_id}
+                >
+                  <ImageIcon className="size-4" />
+                  会话
+                </Button>
+                {canDeleteImages ? (
+                  <Button
+                    type="button"
+                    variant="outline"
+                    className="rounded-xl border-rose-200 text-rose-600 hover:bg-rose-50 hover:text-rose-700"
+                    onClick={() => onDelete(item)}
+                    disabled={isDeleting}
+                  >
+                    {isDeleting ? <LoaderCircle className="size-4 animate-spin" /> : <Trash2 className="size-4" />}
+                    删除
+                  </Button>
+                ) : null}
+              </div>
+            </DialogFooter>
+          </div>
+        </div>
+      </DialogContent>
+    </Dialog>
+  );
 }
 
 const IMAGE_MASONRY_BREAKPOINTS = [
@@ -218,12 +573,17 @@ function useOrderedImageMasonryColumns(items: ManagedImage[]) {
 function ImageManagerContent({
   cacheScope,
   canDeleteImages,
+  canCreatePrompts,
+  canUpdatePromptMetadata,
   isAdmin,
 }: {
   cacheScope: string;
   canDeleteImages: boolean;
+  canCreatePrompts: boolean;
+  canUpdatePromptMetadata: boolean;
   isAdmin: boolean;
 }) {
+  const navigate = useNavigate();
   const activeLoadRef = useRef<AbortController | null>(null);
   const autoRefreshAbortRef = useRef<AbortController | null>(null);
   const loadMoreTargetRef = useRef<HTMLDivElement | null>(null);
@@ -239,6 +599,9 @@ function ImageManagerContent({
   const [deleteTarget, setDeleteTarget] = useState<DeleteImageTarget | null>(null);
   const [isDeleting, setIsDeleting] = useState(false);
   const [visibilityMutatingPath, setVisibilityMutatingPath] = useState<string | null>(null);
+  const [promptMetadataMutatingPath, setPromptMetadataMutatingPath] = useState<string | null>(null);
+  const [manualPromptTarget, setManualPromptTarget] = useState<ManualPromptEditTarget | null>(null);
+  const [detailImagePath, setDetailImagePath] = useState<string | null>(null);
   const [focusedImagePath, setFocusedImagePath] = useState<string | null>(null);
   const [lightboxIndex, setLightboxIndex] = useState(0);
   const [lightboxOpen, setLightboxOpen] = useState(false);
@@ -301,9 +664,13 @@ function ImageManagerContent({
     () => selectedItems.filter((item) => item.visibility === "public"),
     [selectedItems],
   );
+  const detailImage = useMemo(
+    () => items.find((item) => item.path === detailImagePath) ?? null,
+    [detailImagePath, items],
+  );
   const selectedCount = selectedItems.length;
   const allSelected = filteredItems.length > 0 && selectedCount === filteredItems.length;
-  const isMutatingImages = downloadingKey !== null || isDeleting || visibilityMutatingPath !== null;
+  const isMutatingImages = downloadingKey !== null || isDeleting || visibilityMutatingPath !== null || promptMetadataMutatingPath !== null;
   const imageColumns = useOrderedImageMasonryColumns(visibleItems);
   const showImageLoadingState = isLoading && items.length === 0;
   const showImageErrorState = !isLoading && loadError !== "" && items.length === 0;
@@ -560,6 +927,7 @@ function ImageManagerContent({
       });
       setLightboxOpen(false);
       setLightboxIndex(0);
+      setDetailImagePath((current) => (current && pathSet.has(current) ? null : current));
       setDeleteTarget(null);
       toast.success(
         data.missing > 0
@@ -608,6 +976,126 @@ function ImageManagerContent({
     } finally {
       setVisibilityMutatingPath(null);
     }
+  };
+
+  const mergeManagedImageUpdate = (updated: Partial<ManagedImage> & { path: string }) => {
+    clearImageManagerCache();
+    setItems((current) => {
+      const next = current.map((item) =>
+        item.path === updated.path
+          ? {
+              ...item,
+              ...updated,
+            }
+          : item,
+      );
+      updateImageManagerCache(currentCacheKey, next);
+      return next;
+    });
+  };
+
+  const copyPromptText = async (value: string, label: string) => {
+    const text = value.trim();
+    if (!text) {
+      toast.error(`${label}为空`);
+      return;
+    }
+    try {
+      await navigator.clipboard.writeText(text);
+      toast.success(`${label}已复制`);
+    } catch {
+      toast.error("复制失败");
+    }
+  };
+
+  const handleSaveManualPrompt = async () => {
+    if (!manualPromptTarget || !canUpdatePromptMetadata) {
+      return;
+    }
+    const target = manualPromptTarget;
+    setPromptMetadataMutatingPath(target.item.path);
+    try {
+      const data = await updateImagePromptMetadata({
+        path: target.item.path,
+        manual_prompt: target.value,
+      });
+      mergeManagedImageUpdate({
+        ...data.item,
+        path: target.item.path,
+        manual_prompt: target.value,
+      });
+      setManualPromptTarget(null);
+      toast.success("手动提示词已保存");
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "保存手动提示词失败");
+    } finally {
+      setPromptMetadataMutatingPath(null);
+    }
+  };
+
+  const handleSaveImagePromptToLibrary = async (item: ManagedImage) => {
+    const body = imagePromptValue(item);
+    if (!body) {
+      toast.error("当前图片没有可保存的提示词");
+      return;
+    }
+    setPromptMetadataMutatingPath(item.path);
+    try {
+      await savePrompt({
+        title: buildPromptTitleFromImage(item),
+        body,
+        tags: ["图片库"],
+        category: "图片生成",
+        model: item.model || "",
+        use_case: item.mode || "",
+        visibility: "private",
+        source_conversation_id: item.conversation_id || "",
+        source_turn_id: item.turn_id || "",
+        source_image_path: item.path,
+      });
+      toast.success("已保存到提示词库");
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "保存到提示词库失败");
+    } finally {
+      setPromptMetadataMutatingPath(null);
+    }
+  };
+
+  const handleApplyImagePrompt = (item: ManagedImage) => {
+    const body = imagePromptValue(item);
+    if (!body) {
+      toast.error("当前图片没有可应用的提示词");
+      return;
+    }
+    window.sessionStorage.setItem(PENDING_PROMPT_STORAGE_KEY, body);
+    navigate("/image");
+  };
+
+  const handleCopyImageUrl = async (item: ManagedImage) => {
+    try {
+      await navigator.clipboard.writeText(item.url);
+      toast.success("图片地址已复制");
+    } catch {
+      toast.error("复制失败");
+    }
+  };
+
+  const handleOpenOriginalImage = (item: ManagedImage) => {
+    const index = filteredItems.findIndex((current) => current.path === item.path);
+    setLightboxIndex(index >= 0 ? index : 0);
+    setLightboxOpen(true);
+  };
+
+  const handleOpenImageConversation = (item: ManagedImage) => {
+    if (!item.conversation_id) {
+      toast.error("当前图片没有关联会话");
+      return;
+    }
+    window.localStorage.setItem(ACTIVE_IMAGE_CONVERSATION_STORAGE_KEY, item.conversation_id);
+    window.dispatchEvent(new CustomEvent(IMAGE_ACTIVE_CONVERSATION_REQUEST_EVENT, {
+      detail: { conversationId: item.conversation_id, turnId: item.turn_id },
+    }));
+    navigate("/image");
   };
 
   const handleBulkVisibilityChange = async (targetItems: ManagedImage[], visibility: ImageVisibility) => {
@@ -786,7 +1274,7 @@ function ImageManagerContent({
                 <Input
                   value={searchKeyword}
                   onChange={(event) => updateSearchKeyword(event.target.value)}
-                  placeholder="搜索文件、路径、作者、日期"
+                  placeholder="搜索文件、提示词、模型、会话、任务"
                   className="h-10 rounded-lg pr-9 pl-9"
                 />
                 {searchKeyword ? (
@@ -1026,7 +1514,7 @@ function ImageManagerContent({
           >
           {imageColumns.map((column, columnIndex) => (
             <div key={columnIndex} className="flex min-w-0 flex-col gap-3 sm:gap-4">
-              {column.map(({ item, index }) => {
+              {column.map(({ item }) => {
                 const imageKey = managedImageKey(item);
                 const selected = Boolean(selectedImageIds[imageKey]);
                 const focused = focusedImagePath === imageKey;
@@ -1055,16 +1543,16 @@ function ImageManagerContent({
                       type="button"
                       onClick={(event) => {
                         if (!window.matchMedia("(hover: hover)").matches) {
-                          setFocusedImagePath(selected ? null : imageKey);
+                          setFocusedImagePath(imageKey);
                         }
-                        toggleImageSelection(item);
+                        setDetailImagePath(item.path);
                         if (window.matchMedia("(hover: hover)").matches) {
                           event.currentTarget.blur();
                         }
                       }}
                       className="block w-full cursor-pointer overflow-hidden text-left"
                       onFocus={() => setFocusedImagePath(imageKey)}
-                      aria-label={selected ? "取消选择图片" : "选择图片"}
+                      aria-label="查看图片详情"
                     >
                       <img
                         src={item.thumbnail_url || item.url}
@@ -1080,6 +1568,7 @@ function ImageManagerContent({
                     <button
                       type="button"
                       onClick={(event) => {
+                        event.stopPropagation();
                         if (!window.matchMedia("(hover: hover)").matches) {
                           setFocusedImagePath(selected ? null : imageKey);
                         }
@@ -1108,22 +1597,20 @@ function ImageManagerContent({
                         type="button"
                         onClick={(event) => {
                           event.currentTarget.blur();
-                          setLightboxIndex(index);
-                          setLightboxOpen(true);
+                          handleOpenOriginalImage(item);
                         }}
                         className="inline-flex h-7 items-center gap-1 rounded-full bg-white/95 px-2 text-[11px] font-medium text-stone-800 shadow-sm transition hover:bg-white hover:text-stone-950"
-                        aria-label="View Original"
-                        title="View Original"
+                        aria-label="查看原图"
+                        title="查看原图"
                       >
                         <Eye className="size-3" />
-                        View Original
+                        原图
                       </button>
                       <button
                         type="button"
                         onClick={(event) => {
                           event.currentTarget.blur();
-                          void navigator.clipboard.writeText(item.url);
-                          toast.success("图片地址已复制");
+                          void handleCopyImageUrl(item);
                         }}
                         className="inline-flex size-7 items-center justify-center rounded-full bg-white/95 text-stone-800 shadow-sm transition hover:bg-white hover:text-stone-950"
                         aria-label="复制图片地址"
@@ -1244,6 +1731,32 @@ function ImageManagerContent({
           </Card>
         ) : null}
       </div>
+      <ImageDetailDialog
+        item={detailImage}
+        canDeleteImages={canDeleteImages}
+        canCreatePrompts={canCreatePrompts}
+        canEditPromptMetadata={canUpdatePromptMetadata && (galleryView === "mine" || isAdmin)}
+        canUpdateVisibility={galleryView === "mine"}
+        isDeleting={isDeleting}
+        isDownloading={downloadingKey !== null}
+        visibilityMutatingPath={visibilityMutatingPath}
+        promptMetadataMutatingPath={promptMetadataMutatingPath}
+        onOpenChange={(open) => {
+          if (!open) {
+            setDetailImagePath(null);
+          }
+        }}
+        onCopyPrompt={copyPromptText}
+        onCopyImageUrl={handleCopyImageUrl}
+        onDownload={(item) => downloadItems(`detail:${item.path}`, [item])}
+        onOpenOriginal={handleOpenOriginalImage}
+        onEditManualPrompt={(item) => setManualPromptTarget({ item, value: item.manual_prompt || "" })}
+        onSavePrompt={handleSaveImagePromptToLibrary}
+        onApplyPrompt={handleApplyImagePrompt}
+        onOpenConversation={handleOpenImageConversation}
+        onVisibilityChange={handleVisibilityChange}
+        onDelete={(item) => openDeleteConfirm([item])}
+      />
       <ImageLightbox
         images={lightboxImages}
         currentIndex={lightboxIndex}
@@ -1251,6 +1764,42 @@ function ImageManagerContent({
         onOpenChange={setLightboxOpen}
         onIndexChange={setLightboxIndex}
       />
+      {manualPromptTarget ? (
+        <Dialog open onOpenChange={(open) => (!open && !promptMetadataMutatingPath ? setManualPromptTarget(null) : null)}>
+          <DialogContent className="rounded-2xl p-6">
+            <DialogHeader className="gap-2">
+              <DialogTitle>编辑手动提示词</DialogTitle>
+              <DialogDescription className="text-sm leading-6">
+                手动提示词会优先作为图片库中的可用提示词展示。
+              </DialogDescription>
+            </DialogHeader>
+            <Textarea
+              value={manualPromptTarget.value}
+              onChange={(event) => setManualPromptTarget((current) => current ? { ...current, value: event.target.value } : current)}
+              placeholder="输入这张图片最终可复用的提示词"
+              className="min-h-40 rounded-xl text-sm leading-6"
+            />
+            <DialogFooter>
+              <Button
+                type="button"
+                variant="outline"
+                onClick={() => setManualPromptTarget(null)}
+                disabled={Boolean(promptMetadataMutatingPath)}
+              >
+                取消
+              </Button>
+              <Button
+                type="button"
+                onClick={() => void handleSaveManualPrompt()}
+                disabled={Boolean(promptMetadataMutatingPath)}
+              >
+                {promptMetadataMutatingPath === manualPromptTarget.item.path ? <LoaderCircle className="size-4 animate-spin" /> : <Save className="size-4" />}
+                保存
+              </Button>
+            </DialogFooter>
+          </DialogContent>
+        </Dialog>
+      ) : null}
       {canDeleteImages && deleteTarget ? (
         <Dialog open onOpenChange={(open) => (!open && !isDeleting ? setDeleteTarget(null) : null)}>
           <DialogContent showCloseButton={false} className="rounded-2xl p-6">
@@ -1293,5 +1842,15 @@ export default function ImageManagerPage() {
     return <div className="flex min-h-[40vh] items-center justify-center"><LoaderCircle className="size-5 animate-spin text-stone-400" /></div>;
   }
   const canDeleteImages = hasAPIPermission(session, "DELETE", "/api/images");
-  return <ImageManagerContent cacheScope={imageManagerCacheScope(session)} canDeleteImages={canDeleteImages} isAdmin={session.role === "admin"} />;
+  const canCreatePrompts = hasAPIPermission(session, "POST", "/api/prompts");
+  const canUpdatePromptMetadata = hasAPIPermission(session, "PATCH", "/api/images/prompt-metadata");
+  return (
+    <ImageManagerContent
+      cacheScope={imageManagerCacheScope(session)}
+      canDeleteImages={canDeleteImages}
+      canCreatePrompts={canCreatePrompts}
+      canUpdatePromptMetadata={canUpdatePromptMetadata}
+      isAdmin={session.role === "admin"}
+    />
+  );
 }
