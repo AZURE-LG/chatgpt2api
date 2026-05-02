@@ -6,18 +6,15 @@ builds:
   - id: chatgpt2api
     main: ./cmd/chatgpt2api
     binary: chatgpt2api
+    flags:
+      - -tags=embed
     env:
       - CGO_ENABLED=0
     goos:
       - linux
-      - windows
-      - darwin
     goarch:
       - amd64
       - arm64
-    ignore:
-      - goos: windows
-        goarch: arm64
     ldflags:
       - -s -w
       - -X chatgpt2api/internal/version.Version={{ .Version }}
@@ -30,14 +27,10 @@ archives:
     format: tar.gz
     name_template: >-
       {{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}
-    format_overrides:
-      - goos: windows
-        format: zip
     files:
       - README.md
       - .env.example
       - docker-compose.yml
-      - web_dist/**/*
 
 checksum:
   name_template: checksums.txt
@@ -55,8 +48,6 @@ dockers:
       - "{{ .Env.DOCKERHUB_USERNAME }}/chatgpt2api:{{ .Version }}-amd64"
     dockerfile: Dockerfile.goreleaser
     use: buildx
-    extra_files:
-      - web_dist
     build_flag_templates:
       - "--platform=linux/amd64"
       - "--label=org.opencontainers.image.version={{ .Version }}"
@@ -70,8 +61,6 @@ dockers:
       - "{{ .Env.DOCKERHUB_USERNAME }}/chatgpt2api:{{ .Version }}-arm64"
     dockerfile: Dockerfile.goreleaser
     use: buildx
-    extra_files:
-      - web_dist
     build_flag_templates:
       - "--platform=linux/arm64"
       - "--label=org.opencontainers.image.version={{ .Version }}"
@@ -84,8 +73,6 @@ dockers:
       - "ghcr.io/{{ .Env.GITHUB_REPO_OWNER_LOWER }}/chatgpt2api:{{ .Version }}-amd64"
     dockerfile: Dockerfile.goreleaser
     use: buildx
-    extra_files:
-      - web_dist
     build_flag_templates:
       - "--platform=linux/amd64"
       - "--label=org.opencontainers.image.version={{ .Version }}"
@@ -99,8 +86,6 @@ dockers:
       - "ghcr.io/{{ .Env.GITHUB_REPO_OWNER_LOWER }}/chatgpt2api:{{ .Version }}-arm64"
     dockerfile: Dockerfile.goreleaser
     use: buildx
-    extra_files:
-      - web_dist
     build_flag_templates:
       - "--platform=linux/arm64"
       - "--label=org.opencontainers.image.version={{ .Version }}"

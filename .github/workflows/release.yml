@@ -59,7 +59,7 @@ jobs:
         uses: actions/upload-artifact@v7
         with:
           name: web-dist
-          path: web/dist/
+          path: internal/web/dist/
           retention-days: 1
 
   release:
@@ -76,7 +76,7 @@ jobs:
         uses: actions/download-artifact@v8
         with:
           name: web-dist
-          path: web_dist/
+          path: internal/web/dist/
 
       - name: Setup Go
         uses: actions/setup-go@v6

@@ -55,7 +55,7 @@ func TestValidateUpdateDownloadURL(t *testing.T) {
 	}
 }
 
-func TestExtractUpdateArchiveFindsRuntimePayload(t *testing.T) {
+func TestExtractUpdateArchiveFindsEmbeddedRuntimePayload(t *testing.T) {
 	root := t.TempDir()
 	archivePath := filepath.Join(root, "chatgpt2api_1.2.3_linux_amd64.tar.gz")
 	if err := writeTestUpdateArchive(archivePath); err != nil {
@@ -72,11 +72,49 @@ func TestExtractUpdateArchiveFindsRuntimePayload(t *testing.T) {
 	if binary, err := findExtractedBinary(extractDir); err != nil || filepath.Base(binary) != wantBinaryName {
 		t.Fatalf("findExtractedBinary() = %q, %v", binary, err)
 	}
-	if webDist, err := findExtractedWebDist(extractDir); err != nil {
-		t.Fatalf("findExtractedWebDist() error = %v", err)
-	} else if _, err := os.Stat(filepath.Join(webDist, "index.html")); err != nil {
-		t.Fatalf("web_dist index missing: %v", err)
+}
+
+func TestGoReleaserArchiveDoesNotShipWebDist(t *testing.T) {
+	data, err := os.ReadFile(filepath.Join("..", "..", ".goreleaser.yaml"))
+	if err != nil {
+		t.Fatalf("read .goreleaser.yaml: %v", err)
 	}
+	config := string(data)
+	if strings.Contains(config, "web_dist") {
+		t.Fatal(".goreleaser.yaml must not ship runtime web_dist assets")
+	}
+	if !strings.Contains(config, "-tags=embed") {
+		t.Fatal(".goreleaser.yaml must build the binary with embedded frontend assets")
+	}
+}
+
+func TestGoReleaserBuildTargetsLinuxOnly(t *testing.T) {
+	data, err := os.ReadFile(filepath.Join("..", "..", ".goreleaser.yaml"))
+	if err != nil {
+		t.Fatalf("read .goreleaser.yaml: %v", err)
+	}
+	config := string(data)
+	if !yamlListContains(config, "linux") {
+		t.Fatal(".goreleaser.yaml build targets must include linux")
+	}
+	for _, entry := range []string{"windows", "darwin"} {
+		if yamlListContains(config, entry) {
+			t.Fatalf(".goreleaser.yaml build targets must not include %s", entry)
+		}
+	}
+	if strings.Contains(config, "format_overrides:") {
+		t.Fatal(".goreleaser.yaml must not keep non-Linux archive format overrides")
+	}
+}
+
+func yamlListContains(config, value string) bool {
+	for _, line := range strings.Split(config, "\n") {
+		switch strings.TrimSpace(line) {
+		case "- " + value, `- "` + value + `"`, "- '" + value + "'":
+			return true
+		}
+	}
+	return false
 }
 
 func TestSafeExtractPathRejectsTraversal(t *testing.T) {
@@ -127,6 +165,56 @@ func TestFetchLatestReleaseUsesGitHubToken(t *testing.T) {
 	}
 	if info.LatestVersion != "1.2.0" || !info.HasUpdate {
 		t.Fatalf("fetchLatestRelease() = %#v", info)
+	}
+}
+
+func TestDockerDeploymentChecksDockerHubTags(t *testing.T) {
+	api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v2/repositories/zyphrzero/chatgpt2api/tags" {
+			http.NotFound(w, r)
+			return
+		}
+		if got := r.URL.Query().Get("page_size"); got != "100" {
+			t.Fatalf("page_size = %q, want 100", got)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{
+			"results": [
+				{"name":"latest","images":[{"os":"linux","architecture":"amd64"},{"os":"linux","architecture":"arm64"}]},
+				{"name":"0.1.3","last_updated":"2026-01-02T00:00:00Z","images":[{"os":"` + runtime.GOOS + `","architecture":"` + runtime.GOARCH + `"}]},
+				{"name":"0.1.2","images":[{"os":"` + runtime.GOOS + `","architecture":"` + runtime.GOARCH + `"}]},
+				{"name":"0.1.4-amd64","images":[{"os":"` + runtime.GOOS + `","architecture":"` + runtime.GOARCH + `"}]}
+			]
+		}`))
+	}))
+	defer api.Close()
+
+	service := NewUpdateService(UpdateOptions{
+		DockerHubBase:  api.URL,
+		CurrentVersion: "0.1.2",
+		BuildType:      "release",
+		Deployment:     "docker",
+	})
+	info, err := service.fetchLatestRelease(context.Background())
+	if err != nil {
+		t.Fatalf("fetchLatestRelease() error = %v", err)
+	}
+	if info.LatestVersion != "0.1.3" || !info.HasUpdate || info.UpdateSource != "dockerhub" || info.Deployment != "docker" {
+		t.Fatalf("fetchLatestRelease() = %#v", info)
+	}
+	if info.ReleaseInfo == nil || !strings.Contains(info.ReleaseInfo.HTMLURL, "hub.docker.com") {
+		t.Fatalf("docker release info = %#v", info.ReleaseInfo)
+	}
+	if info.ReleaseInfo.PublishedAt.IsZero() {
+		t.Fatalf("docker release info missing published time = %#v", info.ReleaseInfo)
+	}
+}
+
+func TestDockerDeploymentDoesNotReplaceRuntimeBinary(t *testing.T) {
+	service := NewUpdateService(UpdateOptions{Deployment: "docker"})
+	err := service.PerformUpdate(context.Background())
+	if err == nil || !strings.Contains(err.Error(), "DockerHub image") {
+		t.Fatalf("PerformUpdate() error = %v, want DockerHub image guidance", err)
 	}
 }
 
@@ -197,9 +285,7 @@ func writeTestUpdateArchive(path string) error {
 	tw := tar.NewWriter(gz)
 	defer tw.Close()
 	for name, content := range map[string]string{
-		"chatgpt2api_1.2.3_linux_amd64/" + binaryName:        "binary",
-		"chatgpt2api_1.2.3_linux_amd64/web_dist/index.html":  "<html></html>",
-		"chatgpt2api_1.2.3_linux_amd64/web_dist/assets/a.js": "console.log(1)",
+		"chatgpt2api_1.2.3_linux_amd64/" + binaryName: "binary",
 	} {
 		if err := tw.WriteHeader(&tar.Header{Name: name, Mode: 0o644, Size: int64(len(content))}); err != nil {
 			return err

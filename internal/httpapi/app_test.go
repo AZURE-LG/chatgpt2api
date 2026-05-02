@@ -191,7 +191,7 @@ func TestAppAuthAndSPACompatibility(t *testing.T) {
 		req := httptest.NewRequest(http.MethodGet, path, nil)
 		res := httptest.NewRecorder()
 		app.Handler().ServeHTTP(res, req)
-		if res.Code != http.StatusOK || !strings.Contains(res.Body.String(), "go-spa") {
+		if res.Code != http.StatusOK || !strings.Contains(res.Body.String(), `<div id="root"></div>`) {
 			t.Fatalf("%s status/body = %d %q", path, res.Code, res.Body.String())
 		}
 	}
@@ -239,7 +239,6 @@ func TestAdminSystemCheckUpdates(t *testing.T) {
 		APIBaseURL:     releaseAPI.URL,
 		CurrentVersion: version.Get(),
 		BuildType:      version.GetBuildType(),
-		WebDistDir:     filepath.Join(app.config.RootDir, "web_dist"),
 	})
 
 	req := httptest.NewRequest(http.MethodGet, "/api/admin/system/check-updates?force=true", nil)
@@ -415,6 +414,7 @@ func TestCreationTaskFailureWritesCallLog(t *testing.T) {
 	}
 
 	var logs map[string]any
+	var item map[string]any
 	deadline := time.Now().Add(2 * time.Second)
 	for time.Now().Before(deadline) {
 		req = httptest.NewRequest(http.MethodGet, "/api/logs", nil)
@@ -427,21 +427,17 @@ func TestCreationTaskFailureWritesCallLog(t *testing.T) {
 		if err := json.Unmarshal(res.Body.Bytes(), &logs); err != nil {
 			t.Fatalf("logs json: %v", err)
 		}
-		if len(logItems(logs)) > 0 {
+		item = findLogBySummary(logItems(logs), "文生图调用失败")
+		if item != nil {
 			break
 		}
 		time.Sleep(20 * time.Millisecond)
 	}
-	items := logItems(logs)
-	if len(items) == 0 {
+	if item == nil {
 		t.Fatalf("expected creation task failure to write a log event, got %#v", logs)
 	}
-	item := items[0]
 	if _, ok := item["type"]; ok {
 		t.Fatalf("log item should not expose type: %#v", item)
-	}
-	if item["summary"] != "文生图调用失败" {
-		t.Fatalf("unexpected log item: %#v", item)
 	}
 	detail, _ := item["detail"].(map[string]any)
 	if detail["endpoint"] != "/api/creation-tasks/image-generations" ||
@@ -1248,6 +1244,148 @@ func TestProfileAPIKeyIsPersonalAndPermissionIndependent(t *testing.T) {
 	}
 }
 
+func TestProfilePromptFavoritesArePersonalAndPermissionIndependent(t *testing.T) {
+	app := newTestApp(t)
+	defer app.Close()
+
+	user, _, err := app.auth.RegisterPasswordUser("alice", "Password123", "Alice")
+	if err != nil {
+		t.Fatalf("RegisterPasswordUser(alice) error = %v", err)
+	}
+	role, err := app.auth.CreateRole(map[string]any{
+		"name":            "models only",
+		"menu_paths":      []string{"/image"},
+		"api_permissions": []string{service.APIPermissionKey("GET", "/v1/models")},
+	})
+	if err != nil {
+		t.Fatalf("CreateRole() error = %v", err)
+	}
+	if updated := app.auth.UpdateUser(user.ID, map[string]any{"role_id": role["id"]}); updated == nil {
+		t.Fatal("UpdateUser(role) returned nil")
+	}
+	_, aliceToken, err := app.auth.LoginPassword("alice", "Password123")
+	if err != nil {
+		t.Fatalf("LoginPassword(alice) error = %v", err)
+	}
+
+	other, otherToken, err := app.auth.RegisterPasswordUser("bob", "Password123", "Bob")
+	if err != nil {
+		t.Fatalf("RegisterPasswordUser(bob) error = %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/api/profile/prompt-favorites", nil)
+	req.Header.Set("Authorization", "Bearer "+aliceToken)
+	res := httptest.NewRecorder()
+	app.Handler().ServeHTTP(res, req)
+	if res.Code != http.StatusOK {
+		t.Fatalf("initial list status = %d body = %s", res.Code, res.Body.String())
+	}
+	var list map[string]any
+	if err := json.Unmarshal(res.Body.Bytes(), &list); err != nil {
+		t.Fatalf("initial list json: %v", err)
+	}
+	if items := logItems(list); len(items) != 0 {
+		t.Fatalf("initial list should be empty: %#v", list)
+	}
+
+	body := `{
+		"prompt_id":"banana-prompt-quicker:title:author:1",
+		"source":"banana-prompt-quicker",
+		"title":"Prompt A",
+		"preview":"https://example.test/a.png",
+		"reference_image_urls":["https://example.test/ref.png"],
+		"prompt":"draw a cat",
+		"author":"Alice",
+		"mode":"edit",
+		"category":"Animals",
+		"sub_category":"Cats",
+		"source_label":"banana-prompt-quicker",
+		"is_nsfw":false,
+		"localizations":{"zh-CN":{"title":"提示词 A","prompt":"画猫","category":"动物","sub_category":"猫"}}
+	}`
+	req = httptest.NewRequest(http.MethodPost, "/api/profile/prompt-favorites", strings.NewReader(body))
+	req.Header.Set("Authorization", "Bearer "+aliceToken)
+	res = httptest.NewRecorder()
+	app.Handler().ServeHTTP(res, req)
+	if res.Code != http.StatusOK {
+		t.Fatalf("create favorite status = %d body = %s", res.Code, res.Body.String())
+	}
+	var created map[string]any
+	if err := json.Unmarshal(res.Body.Bytes(), &created); err != nil {
+		t.Fatalf("create favorite json: %v", err)
+	}
+	item, _ := created["item"].(map[string]any)
+	favoriteID, _ := item["id"].(string)
+	if favoriteID == "" || item["title"] != "Prompt A" || item["prompt_id"] != "banana-prompt-quicker:title:author:1" {
+		t.Fatalf("create favorite body = %#v", created)
+	}
+	if items := logItems(created); len(items) != 1 {
+		t.Fatalf("created items length = %d body = %#v", len(items), created)
+	}
+
+	req = httptest.NewRequest(http.MethodPost, "/api/profile/prompt-favorites", strings.NewReader(strings.Replace(body, "Prompt A", "Prompt A Updated", 1)))
+	req.Header.Set("Authorization", "Bearer "+aliceToken)
+	res = httptest.NewRecorder()
+	app.Handler().ServeHTTP(res, req)
+	if res.Code != http.StatusOK {
+		t.Fatalf("duplicate favorite status = %d body = %s", res.Code, res.Body.String())
+	}
+	if err := json.Unmarshal(res.Body.Bytes(), &created); err != nil {
+		t.Fatalf("duplicate favorite json: %v", err)
+	}
+	if items := logItems(created); len(items) != 1 || items[0]["title"] != "Prompt A Updated" {
+		t.Fatalf("duplicate favorite should update in place: %#v", created)
+	}
+
+	req = httptest.NewRequest(http.MethodGet, "/api/profile/prompt-favorites", nil)
+	req.Header.Set("Authorization", "Bearer "+otherToken)
+	res = httptest.NewRecorder()
+	app.Handler().ServeHTTP(res, req)
+	if res.Code != http.StatusOK {
+		t.Fatalf("other list status = %d body = %s", res.Code, res.Body.String())
+	}
+	if err := json.Unmarshal(res.Body.Bytes(), &list); err != nil {
+		t.Fatalf("other list json: %v", err)
+	}
+	if items := logItems(list); len(items) != 0 {
+		t.Fatalf("other user saw favorites, user=%s other=%s list=%#v", user.ID, other.ID, list)
+	}
+
+	req = httptest.NewRequest(http.MethodDelete, "/api/profile/prompt-favorites/"+favoriteID, nil)
+	req.Header.Set("Authorization", "Bearer "+otherToken)
+	res = httptest.NewRecorder()
+	app.Handler().ServeHTTP(res, req)
+	if res.Code != http.StatusNotFound {
+		t.Fatalf("other delete status = %d body = %s", res.Code, res.Body.String())
+	}
+
+	req = httptest.NewRequest(http.MethodDelete, "/api/profile/prompt-favorites/"+favoriteID, nil)
+	req.Header.Set("Authorization", "Bearer "+aliceToken)
+	res = httptest.NewRecorder()
+	app.Handler().ServeHTTP(res, req)
+	if res.Code != http.StatusOK {
+		t.Fatalf("delete favorite status = %d body = %s", res.Code, res.Body.String())
+	}
+	if err := json.Unmarshal(res.Body.Bytes(), &list); err != nil {
+		t.Fatalf("delete favorite json: %v", err)
+	}
+	if items := logItems(list); len(items) != 0 {
+		t.Fatalf("favorite remained after delete: %#v", list)
+	}
+
+	_, unownedKey, err := app.auth.CreateAPIKey(service.AuthRoleUser, "legacy user", service.AuthOwner{})
+	if err != nil {
+		t.Fatalf("CreateAPIKey(unowned) error = %v", err)
+	}
+	req = httptest.NewRequest(http.MethodGet, "/api/profile/prompt-favorites", nil)
+	req.Header.Set("Authorization", "Bearer "+unownedKey)
+	res = httptest.NewRecorder()
+	app.Handler().ServeHTTP(res, req)
+	if res.Code != http.StatusForbidden {
+		t.Fatalf("unowned key list status = %d body = %s", res.Code, res.Body.String())
+	}
+}
+
 func TestAdminUsersManageLinuxDoUsers(t *testing.T) {
 	app := newTestApp(t)
 	defer app.Close()
@@ -1752,6 +1890,15 @@ func logItems(payload map[string]any) []map[string]any {
 	return items
 }
 
+func findLogBySummary(items []map[string]any, summary string) map[string]any {
+	for _, item := range items {
+		if item["summary"] == summary {
+			return item
+		}
+	}
+	return nil
+}
+
 func findHTTPItem(items []map[string]any, id string) map[string]any {
 	for _, item := range items {
 		if item["id"] == id {
@@ -1808,12 +1955,6 @@ func newTestApp(t *testing.T) *App {
 	unsetTestEnv(t, "CHATGPT2API_REGISTRATION_ENABLED")
 	t.Setenv("STORAGE_BACKEND", "json")
 	t.Setenv("DATABASE_URL", "")
-	if err := os.MkdirAll(filepath.Join(root, "web_dist", "assets"), 0o755); err != nil {
-		t.Fatalf("mkdir web_dist: %v", err)
-	}
-	if err := os.WriteFile(filepath.Join(root, "web_dist", "index.html"), []byte("<html>go-spa</html>"), 0o644); err != nil {
-		t.Fatalf("write index: %v", err)
-	}
 	app, err := NewApp()
 	if err != nil {
 		t.Fatalf("NewApp() error = %v", err)

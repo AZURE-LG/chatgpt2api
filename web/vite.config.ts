@@ -21,4 +21,8 @@ export default defineConfig({
     port: 6868,
     strictPort: true,
   },
+  build: {
+    outDir: "../internal/web/dist",
+    emptyOutDir: true,
+  },
 });

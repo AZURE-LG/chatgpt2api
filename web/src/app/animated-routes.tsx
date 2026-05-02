@@ -6,6 +6,7 @@ import {
   useLocation,
 } from "react-router-dom";
 import {
+  AnimatePresence,
   motion,
   useReducedMotion,
   type Transition,
@@ -17,7 +18,7 @@ import { getCachedAuthSession } from "@/lib/session";
 import { canAccessPath, getDefaultRouteForSession } from "@/store/auth";
 
 const routeTransition: Transition = {
-  duration: 0.16,
+  duration: 0.2,
   ease: [0.22, 1, 0.36, 1],
 };
 
@@ -28,17 +29,19 @@ const reducedRouteTransition: Transition = {
 const routeVariants: Variants = {
   initial: {
     opacity: 0,
-    y: 6,
   },
   animate: {
     opacity: 1,
-    y: 0,
+  },
+  exit: {
+    opacity: 0,
   },
 };
 
 const reducedRouteVariants: Variants = {
   initial: { opacity: 0 },
   animate: { opacity: 1 },
+  exit: { opacity: 0 },
 };
 
 function PermissionRoute({ requiredPath, children }: { requiredPath?: string; children: ReactNode }) {
@@ -63,23 +66,26 @@ export function AnimatedRoutes() {
   const prefersReducedMotion = useReducedMotion();
 
   return (
-    <motion.div
-      key={location.pathname}
-      variants={prefersReducedMotion ? reducedRouteVariants : routeVariants}
-      initial="initial"
-      animate="animate"
-      transition={prefersReducedMotion ? reducedRouteTransition : routeTransition}
-      className="min-w-0"
-    >
-      <Routes location={location}>
-        {appRoutes.map((route) => (
-          <Route
-            key={route.path}
-            path={route.path}
-            element={<PermissionRoute requiredPath={route.requiredPath}>{route.element}</PermissionRoute>}
-          />
-        ))}
-      </Routes>
-    </motion.div>
+    <AnimatePresence mode="wait" initial={false}>
+      <motion.div
+        key={location.pathname}
+        variants={prefersReducedMotion ? reducedRouteVariants : routeVariants}
+        initial="initial"
+        animate="animate"
+        exit="exit"
+        transition={prefersReducedMotion ? reducedRouteTransition : routeTransition}
+        className="min-w-0"
+      >
+        <Routes location={location}>
+          {appRoutes.map((route) => (
+            <Route
+              key={route.path}
+              path={route.path}
+              element={<PermissionRoute requiredPath={route.requiredPath}>{route.element}</PermissionRoute>}
+            />
+          ))}
+        </Routes>
+      </motion.div>
+    </AnimatePresence>
   );
 }

@@ -34,11 +34,11 @@
 ### 后端服务
 
 - Go 单体服务，容器内启动 `/app/chatgpt2api`。
-- 前端构建产物位于 `/app/web_dist`，由 Go 服务直接托管。
+- 前端构建产物嵌入 Go 二进制，由 Go 服务直接托管。
 - 支持 Docker / Docker Compose 部署。
 - 支持 SQLite、JSON 文件和 PostgreSQL 存储后端。
 - 支持全局 HTTP / HTTPS / SOCKS5 / SOCKS5H 代理。
-- 支持 Release 构建的在线检查更新、下载更新和回滚，完成后提示重启服务。
+- 支持 DockerHub 默认版本检查，以及非 Docker Release 构建的在线更新和回滚。
 
 ### 管理端
 
@@ -95,7 +95,7 @@ docker compose up -d
 
 默认 Compose 配置：
 
-- 镜像：`ghcr.io/zyphrzero/chatgpt2api:latest`
+- 镜像：`zyphrzero/chatgpt2api:latest`
 - 端口：宿主机 `6969` -> 容器 `80`
 - 数据目录：`./data:/app/data`
 - 环境文件：`./.env:/app/.env`
@@ -107,11 +107,91 @@ docker compose up -d
 http://localhost:6969
 ```
 
-查看日志：
+查看日志（需要在 `docker-compose.yml` 所在目录执行）：
 
 ```bash
 docker compose logs -f app
 ```
+
+查看自动生成的管理员密码（需要在 `docker-compose.yml` 所在目录执行）：
+
+```bash
+docker compose logs app | grep "bootstrap admin password generated"
+```
+
+日志行格式：
+
+```text
+bootstrap admin password generated: username=admin password=生成的密码
+```
+
+<details>
+<summary>PowerShell、容器日志和查不到密码时的处理方式</summary>
+
+Windows PowerShell：
+
+```powershell
+docker compose logs app | Select-String "bootstrap admin password generated"
+```
+
+默认容器名方式：
+
+```bash
+docker logs chatgpt2api 2>&1 | grep "bootstrap admin password generated"
+```
+
+如果提示 `no configuration file provided: not found`，说明当前目录没有 Compose 配置文件。先进入部署目录再执行 `docker compose logs app`，或直接使用上面的 `docker logs chatgpt2api ...` 命令。
+
+如果查不到日志，先确认 `.env` 或容器环境里是否已经设置了固定密码：
+
+```bash
+grep -n "^CHATGPT2API_ADMIN_PASSWORD=" .env
+docker inspect chatgpt2api --format '{{range .Config.Env}}{{println .}}{{end}}' | grep "^CHATGPT2API_ADMIN_PASSWORD="
+```
+
+如果已经设置了 `CHATGPT2API_ADMIN_PASSWORD`，服务会直接使用该值作为初始管理员密码，不会生成密码，也不会输出 `bootstrap admin password generated` 日志。自动生成的密码只会在首次创建管理员账号时输出一次；如果管理员账号已经存在，重新设置 `.env` 里的 `CHATGPT2API_ADMIN_PASSWORD` 不会覆盖现有管理员密码。容器日志被清理后，明文密码无法从已保存的 bcrypt 哈希中反查。
+
+</details>
+
+<details>
+<summary>重置本地管理员密码</summary>
+
+默认 SQLite 部署可按下面步骤重置本地登录账号数据。该操作会删除本地后台登录用户（包括管理员和普通本地用户），但不会删除账号池数据；执行前会先备份 `data` 目录。
+
+```bash
+cd /opt/chatgpt2api
+# 编辑 .env，设置一个新的已知管理员密码：
+# CHATGPT2API_ADMIN_PASSWORD=your_new_password
+
+docker compose down
+cp -a data "data.bak.$(date +%Y%m%d-%H%M%S)"
+python3 - <<'PY'
+import sqlite3
+from pathlib import Path
+
+db = Path("data/chatgpt2api.db")
+if not db.exists():
+    raise SystemExit(f"{db} not found")
+
+con = sqlite3.connect(db)
+cur = con.execute("DELETE FROM json_documents WHERE name = ?", ("auth_users.json",))
+con.commit()
+print(f"removed auth_users.json rows: {cur.rowcount}")
+con.close()
+PY
+docker compose up -d
+```
+
+如果使用 `STORAGE_BACKEND=json`，本地登录账号保存在 `data/auth_users.json`，可在备份后删除该文件再重启：
+
+```bash
+docker compose down
+cp -a data "data.bak.$(date +%Y%m%d-%H%M%S)"
+rm -f data/auth_users.json
+docker compose up -d
+```
+
+</details>
 
 ### 3. 自建镜像
 
@@ -132,35 +212,44 @@ docker compose pull
 docker compose up -d
 ```
 
-如果 GHCR 拉取提示 denied，请确认 GitHub Packages 中镜像已设为 Public，或先登录：
+默认 Compose 使用 DockerHub 公共镜像，普通用户不需要配置 GitHub Release 源、GitHub Token，也不需要登录 GitHub。也可以按需将 `docker-compose.yml` 的 `image` 改为 GHCR：
 
-```bash
-docker login ghcr.io
+```yaml
+image: ghcr.io/zyphrzero/chatgpt2api:latest
 ```
 
-### 管理端在线更新
+可用镜像：
 
-Release 构建可以在设置页的“版本更新”卡片中检查和执行在线更新。
+```text
+zyphrzero/chatgpt2api:latest
+ghcr.io/zyphrzero/chatgpt2api:latest
+```
 
-在线更新流程：
+### 管理端版本检查
 
-1. 后端请求 GitHub latest release。
+设置页的“版本更新”卡片会按部署方式选择更新来源：
+
+- Docker 镜像：默认匿名检查 DockerHub 公共镜像标签，升级方式是 `docker compose pull && docker compose up -d`。
+- Release 二进制：检查项目 GitHub Release，只有这种非 Docker 部署会显示“立即更新”并替换当前 `chatgpt2api` 二进制。
+
+Release 二进制在线更新流程：
+
+1. 后端请求项目 latest release。
 2. 比较当前版本和最新版本。
 3. 下载当前平台匹配的 Release 压缩包。
 4. 校验 `checksums.txt`。
 5. 替换当前 `chatgpt2api` 二进制。
-6. 替换 `web_dist` 前端产物。
-7. 保留 `.backup` 以支持回滚。
-8. 前端提示重启服务。
+6. 保留 `.backup` 以支持回滚。
+7. 前端提示重启服务。
 
 重要说明：
 
-- 在线更新只在 `BuildType=release` 的构建中开放。
-- Docker 场景下，在线更新替换的是当前容器文件系统中的运行时文件，不会更新 Docker 镜像本身。
-- 如果重新创建容器，最终仍以镜像内容为准。长期稳定的 Docker 升级仍建议使用 `docker compose pull && docker compose up -d`。
-- 在线更新访问 GitHub 可通过 `CHATGPT2API_UPDATE_PROXY_URL` 配置代理；未设置时复用 `CHATGPT2API_PROXY`。
-- 如果检查更新提示 `GitHub API returned 403`，通常是当前出口 IP 的匿名 GitHub API 额度耗尽。可在设置页“版本更新”卡片中配置 GitHub API Token，或通过 `CHATGPT2API_UPDATE_GITHUB_TOKEN` 使用认证请求。
-- 如果检查更新提示 `GitHub API returned 404`，通常是更新源仓库没有 GitHub Release，或 Token 没有该仓库读取权限。请先发布包含 archive 和 `checksums.txt` 的 Release，或在设置页配置实际发布 Release 的 `owner/repo`。
+- Docker 部署默认从 DockerHub 拉取镜像，不需要填写 GitHub Release 源或 GitHub Token。
+- Docker 容器内不会执行二进制替换；请用 `docker compose pull && docker compose up -d` 更新镜像。
+- 在线二进制替换只在非 Docker 的 `BuildType=release` 构建中开放。
+- 前端资源已嵌入 Release 二进制，在线更新只替换 `chatgpt2api` 这一个运行文件。
+- 检查更新访问 DockerHub / Release API 可通过 `CHATGPT2API_UPDATE_PROXY_URL` 配置代理；未设置时复用 `CHATGPT2API_PROXY`。
+- 正式 Release archive 只发布 Linux `amd64` / `arm64` 构建；Windows 和 macOS 不提供在线更新压缩包。
 - 简化发布只推送 Docker 镜像，不上传二进制压缩包时，在线更新无法找到可下载的 Release archive。
 
 ### 源码部署升级
@@ -169,8 +258,10 @@ Release 构建可以在设置页的“版本更新”卡片中检查和执行在
 
 ```bash
 git pull
+bun install --cwd web --frozen-lockfile
+bun --cwd web run build
 go test ./...
-go build -ldflags "-X chatgpt2api/internal/version.Version=1.0.0" -o chatgpt2api ./cmd/chatgpt2api
+go build -tags=embed -ldflags "-X chatgpt2api/internal/version.Version=1.0.0" -o chatgpt2api ./cmd/chatgpt2api
 ```
 
 ## 配置说明
@@ -186,9 +277,7 @@ go build -ldflags "-X chatgpt2api/internal/version.Version=1.0.0" -o chatgpt2api
 | `CHATGPT2API_REGISTRATION_ENABLED` | `false` | 是否开放登录页账号注册入口 |
 | `CHATGPT2API_BASE_URL` | 空 | 用于生成图片 URL 的外部访问地址 |
 | `CHATGPT2API_PROXY` | 空 | 全局代理，支持 `http`、`https`、`socks5`、`socks5h` |
-| `CHATGPT2API_UPDATE_PROXY_URL` | 空 | 在线更新访问 GitHub Release 的代理；为空时复用全局代理 |
-| `CHATGPT2API_UPDATE_REPO` | `ZyphrZero/chatgpt2api` | 在线更新检查的 GitHub Release 仓库，格式为 `owner/repo`，也可在前端设置页配置 |
-| `CHATGPT2API_UPDATE_GITHUB_TOKEN` | 空 | 在线更新访问 GitHub API 的令牌；用于避免匿名 API 60 次/小时限流，也可在前端设置页配置 |
+| `CHATGPT2API_UPDATE_PROXY_URL` | 空 | 检查更新访问 DockerHub / Release API 的代理；为空时复用全局代理 |
 | `CHATGPT2API_REFRESH_ACCOUNT_INTERVAL_MINUTE` | `5` | 限流账号检查间隔，单位分钟 |
 | `CHATGPT2API_IMAGE_CONCURRENT_LIMIT` | `4` | 全局同时生成图片任务数量 |
 | `CHATGPT2API_USER_DEFAULT_CONCURRENT_LIMIT` | `0` | 普通用户默认并发限制，`0` 表示不限制 |
@@ -254,8 +343,10 @@ CHATGPT2API_LINUXDO_FRONTEND_REDIRECT_URL=/auth/linuxdo/callback
 ### 后端
 
 ```bash
+bun install --cwd web --frozen-lockfile
+bun --cwd web run build
 go test ./...
-go build -ldflags "-X chatgpt2api/internal/version.Version=0.0.0-dev" -o chatgpt2api ./cmd/chatgpt2api
+go build -tags=embed -ldflags "-X chatgpt2api/internal/version.Version=0.0.0-dev" -o chatgpt2api ./cmd/chatgpt2api
 CHATGPT2API_ADMIN_PASSWORD=change_me_please ./chatgpt2api
 ```
 
@@ -316,12 +407,13 @@ bun run build
 推送 `v*` 标签会触发 `.github/workflows/release.yml`：
 
 1. 构建前端。
-2. 上传 `web/dist` artifact。
-3. GoReleaser 构建多平台二进制。
-4. 生成 GitHub Release archive 和 `checksums.txt`。
-5. 使用 `Dockerfile.goreleaser` 构建多架构 Docker 镜像。
-6. 推送 GHCR 镜像。
-7. 如果配置了 `DOCKERHUB_USERNAME` 和 `DOCKERHUB_TOKEN`，同步推送 DockerHub。
+2. 上传 `internal/web/dist` artifact。
+3. 将前端 artifact 下载到 `internal/web/dist`。
+4. GoReleaser 使用 `-tags=embed` 构建 Linux `amd64` / `arm64` 二进制。
+5. 生成 GitHub Release archive 和 `checksums.txt`。
+6. 使用 `Dockerfile.goreleaser` 构建多架构 Docker 镜像。
+7. 推送 DockerHub 镜像。
+8. 推送 GHCR 镜像。
 
 发布命令示例：
 
@@ -339,20 +431,20 @@ Release 构建会注入：
 
 ### Docker 镜像标签
 
-默认发布到：
+默认发布到 DockerHub：
+
+```text
+zyphrzero/chatgpt2api:<version>
+zyphrzero/chatgpt2api:latest
+zyphrzero/chatgpt2api:<major>.<minor>
+```
+
+同时发布到 GHCR：
 
 ```text
 ghcr.io/zyphrzero/chatgpt2api:<version>
 ghcr.io/zyphrzero/chatgpt2api:latest
 ghcr.io/zyphrzero/chatgpt2api:<major>.<minor>
-```
-
-配置 DockerHub secrets 后也会发布：
-
-```text
-<DOCKERHUB_USERNAME>/chatgpt2api:<version>
-<DOCKERHUB_USERNAME>/chatgpt2api:latest
-<DOCKERHUB_USERNAME>/chatgpt2api:<major>.<minor>
 ```
 
 ## API 接入
@@ -390,22 +482,6 @@ Authorization: Bearer <session-or-api-token>
 ```bash
 curl http://localhost:6969/v1/models \
   -H "Authorization: Bearer <session-or-api-token>"
-```
-
-该接口会返回上游可用模型列表。管理端和图片工作流内置的常用模型选项包括：
-
-```text
-auto
-gpt-image-2
-codex-gpt-image-2
-gpt-5-mini
-gpt-5-3-mini
-gpt-5
-gpt-5-1
-gpt-5-2
-gpt-5-3
-gpt-5.4
-gpt-5.5
 ```
 
 ### `POST /v1/images/generations`

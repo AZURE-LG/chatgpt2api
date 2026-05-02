@@ -153,7 +153,7 @@ export default function LoginPage() {
 
   return (
     <div
-      className={`${loginBackgroundClass} fixed inset-0 z-50 flex min-h-svh w-screen items-center justify-center overflow-y-auto px-4 py-6 font-login sm:px-6 lg:px-8`}
+      className={`${loginBackgroundClass} fixed inset-0 z-50 flex min-h-svh w-screen items-center justify-center overflow-y-auto px-4 py-6 font-login [align-items:safe_center] sm:px-6 lg:px-8`}
     >
       <div className="fixed right-4 top-4 z-50 flex items-center gap-2 sm:right-6 sm:top-6">
         <Button
@@ -195,9 +195,9 @@ export default function LoginPage() {
         </Button>
       </div>
 
-      <div className="relative z-10 grid w-full max-w-[58rem] overflow-hidden rounded-[32px] border border-white/80 bg-white/95 shadow-[0_28px_80px_rgba(15,23,42,0.12),0_10px_28px_rgba(44,30,116,0.08)] backdrop-blur dark:border-white/10 dark:bg-[#111827]/92 dark:shadow-[0_30px_90px_rgba(2,6,23,0.58),0_12px_32px_rgba(2,6,23,0.32)] lg:h-[39rem] lg:grid-cols-[minmax(0,28rem)_minmax(0,1fr)]">
+      <div className="relative z-10 grid w-full max-w-[58rem] overflow-hidden rounded-[32px] border border-white/80 bg-white/95 shadow-[0_28px_80px_rgba(15,23,42,0.12),0_10px_28px_rgba(44,30,116,0.08)] backdrop-blur transition-[min-height] duration-300 ease-[cubic-bezier(0.22,1,0.36,1)] motion-reduce:transition-none dark:border-white/10 dark:bg-[#111827]/92 dark:shadow-[0_30px_90px_rgba(2,6,23,0.58),0_12px_32px_rgba(2,6,23,0.32)] lg:min-h-[39rem] lg:grid-cols-[minmax(0,28rem)_minmax(0,1fr)]">
         <section className="flex min-h-[500px] flex-col justify-center px-6 py-8 sm:px-10 lg:px-12">
-          <div className="flex flex-col gap-9">
+          <div className="flex flex-col gap-9 transition-[gap] duration-300 ease-[cubic-bezier(0.22,1,0.36,1)] motion-reduce:transition-none">
             <div className="flex items-center gap-3">
               <img
                 src="/logo-mark.svg"
@@ -220,11 +220,11 @@ export default function LoginPage() {
                 <ShieldCheck className="size-3.5 text-[#1456f0] dark:text-sky-300" />
                 Secure Access
               </div>
-              <div className="flex flex-col gap-2">
-                <h1 className="text-[2.1rem] leading-[1.12] font-semibold tracking-[-0.04em] text-[#222222] dark:text-white sm:text-[2.5rem]">
+              <div className="flex flex-col gap-2 transition-all duration-200 ease-[cubic-bezier(0.22,1,0.36,1)] motion-reduce:transition-none">
+                <h1 className="text-[2.1rem] leading-[1.12] font-semibold tracking-[-0.04em] text-[#222222] transition-opacity duration-200 dark:text-white sm:text-[2.5rem]">
                   {isRegisterMode ? "CreateAccount" : "WelcomeBack"}
                 </h1>
-                <p className="max-w-[340px] text-sm leading-6 text-[#45515e] dark:text-white/62">
+                <p className="max-w-[340px] text-sm leading-6 text-[#45515e] transition-opacity duration-200 dark:text-white/62">
                   {isRegisterMode
                     ? `创建账号后进入 ${appMeta.app_title || "chatgpt2api"} 控制台。`
                     : `使用账号和密码进入 ${appMeta.app_title || "chatgpt2api"} 控制台。`}
@@ -256,25 +256,33 @@ export default function LoginPage() {
                   />
                 </div>
               </div>
-              {isRegisterMode ? (
-                <div className="flex flex-col gap-2">
-                  <label htmlFor="login-display-name" className="block text-sm font-semibold text-[#222222] dark:text-white/88">
-                    昵称
-                  </label>
-                  <div className="relative">
-                    <UserPlus className="pointer-events-none absolute left-3.5 top-1/2 size-4 -translate-y-1/2 text-[#8e8e93] dark:text-white/42" />
-                    <Input
-                      id="login-display-name"
-                      type="text"
-                      autoComplete="nickname"
-                      value={displayName}
-                      onChange={(event) => setDisplayName(event.target.value)}
-                      placeholder="可选"
-                      className="h-12 rounded-[16px] bg-white/90 pl-10 shadow-[0_6px_18px_rgba(24,40,72,0.05)] dark:border-white/12 dark:bg-white/8 dark:text-white dark:placeholder:text-white/38 dark:shadow-[0_12px_26px_rgba(2,6,23,0.24)]"
-                    />
+              <div
+                className={`-m-4 grid overflow-hidden px-4 py-4 transition-[grid-template-rows,opacity,transform] duration-300 ease-[cubic-bezier(0.22,1,0.36,1)] motion-reduce:translate-y-0 motion-reduce:transition-none ${
+                  isRegisterMode ? "grid-rows-[1fr] opacity-100 translate-y-0" : "pointer-events-none grid-rows-[0fr] opacity-0 -translate-y-1.5"
+                }`}
+                aria-hidden={!isRegisterMode}
+              >
+                <div className="min-h-0 overflow-visible">
+                  <div className="flex flex-col gap-2">
+                    <label htmlFor="login-display-name" className="block text-sm font-semibold text-[#222222] dark:text-white/88">
+                      昵称
+                    </label>
+                    <div className="relative">
+                      <UserPlus className="pointer-events-none absolute left-3.5 top-1/2 size-4 -translate-y-1/2 text-[#8e8e93] dark:text-white/42" />
+                      <Input
+                        id="login-display-name"
+                        type="text"
+                        autoComplete="nickname"
+                        tabIndex={isRegisterMode ? undefined : -1}
+                        value={displayName}
+                        onChange={(event) => setDisplayName(event.target.value)}
+                        placeholder="可选"
+                        className="h-12 rounded-[16px] bg-white/90 pl-10 shadow-[0_6px_18px_rgba(24,40,72,0.05)] dark:border-white/12 dark:bg-white/8 dark:text-white dark:placeholder:text-white/38 dark:shadow-[0_12px_26px_rgba(2,6,23,0.24)]"
+                      />
+                    </div>
                   </div>
                 </div>
-              ) : null}
+              </div>
               <div className="flex flex-col gap-2">
                 <label htmlFor="login-password" className="block text-sm font-semibold text-[#222222] dark:text-white/88">
                   密码
@@ -302,7 +310,7 @@ export default function LoginPage() {
                 >
                   <span className="pointer-events-none absolute inset-x-4 top-1 h-3 rounded-full bg-white/75 blur-sm dark:bg-white/14" />
                   <span className="pointer-events-none absolute inset-[1px] rounded-[1.35rem] border border-white/55 dark:border-white/10" />
-                  <span className="relative z-10 flex items-center gap-2 font-semibold tracking-[-0.01em]">
+                  <span className="relative z-10 flex items-center gap-2 font-semibold tracking-[-0.01em] transition-opacity duration-150">
                     {isSubmitting ? (
                       <LoaderCircle className="size-4 animate-spin" />
                     ) : (
@@ -319,7 +327,9 @@ export default function LoginPage() {
                     onClick={() => setIsRegisterMode((value) => !value)}
                     disabled={isSubmitting}
                   >
-                    {isRegisterMode ? "已有账号，返回登录" : "没有账号，注册一个"}
+                    <span className="transition-opacity duration-150">
+                      {isRegisterMode ? "已有账号，返回登录" : "没有账号，注册一个"}
+                    </span>
                   </Button>
                 ) : null}
                 {linuxDoEnabled ? (

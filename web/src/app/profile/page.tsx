@@ -135,8 +135,6 @@ function ProfileContent({ session }: { session: StoredAuthSession }) {
   const isNameDirty = Boolean(key) && keyName.trim() !== (key?.name || "");
   const isProfileNameDirty = profileName.trim() !== (currentSession.name || "");
   const roleLabel = sessionRoleLabel(currentSession);
-  const menuPermissionLabel = currentSession.role === "admin" ? "全部菜单" : `${currentSession.menuPaths.length} 项`;
-  const apiPermissionLabel = currentSession.role === "admin" ? "全部接口" : `${currentSession.apiPermissions.length} 项`;
 
   useEffect(() => {
     setCurrentSession(session);
@@ -333,27 +331,25 @@ function ProfileContent({ session }: { session: StoredAuthSession }) {
         <div className="flex flex-col gap-5">
           <Card>
             <CardHeader>
-            <div className="flex items-center justify-between gap-3">
-              <div className="flex min-w-0 items-center gap-3">
-                <div className="flex size-11 shrink-0 items-center justify-center rounded-2xl bg-primary text-primary-foreground">
-                  <UserCircle2 className="size-5" />
+              <div className="flex items-center justify-between gap-3">
+                <div className="flex min-w-0 items-center gap-3">
+                  <div className="flex size-11 shrink-0 items-center justify-center rounded-2xl bg-primary text-primary-foreground">
+                    <UserCircle2 className="size-5" />
+                  </div>
+                  <div className="min-w-0">
+                    <CardTitle className="truncate text-lg">{currentSession.name || "用户"}</CardTitle>
+                    <CardDescription className="truncate">{currentSession.subjectId || "—"}</CardDescription>
+                  </div>
                 </div>
-                <div className="min-w-0">
-                  <CardTitle className="truncate text-lg">{currentSession.name || "用户"}</CardTitle>
-                  <CardDescription className="truncate">{currentSession.subjectId || "—"}</CardDescription>
-                </div>
+                <Badge variant={currentSession.role === "admin" ? "violet" : "secondary"} className="shrink-0 rounded-md">
+                  {roleLabel}
+                </Badge>
               </div>
-              <Badge variant={currentSession.role === "admin" ? "violet" : "secondary"} className="shrink-0 rounded-md">
-                {roleLabel}
-              </Badge>
-            </div>
             </CardHeader>
             <CardContent className="flex flex-col gap-3">
               <InfoRow label="用户 ID" value={currentSession.subjectId} code />
               <InfoRow label="登录来源" value={providerLabel(currentSession.provider)} />
               <InfoRow label="角色 ID" value={currentSession.roleId || currentSession.role} code />
-              <InfoRow label="菜单权限" value={menuPermissionLabel} />
-              <InfoRow label="API 权限" value={apiPermissionLabel} />
             </CardContent>
           </Card>
 

@@ -56,14 +56,14 @@ func TestAppRouterKeepsAPIMissesOutOfSPA(t *testing.T) {
 	req = httptest.NewRequest(http.MethodGet, "/settings", nil)
 	res = httptest.NewRecorder()
 	app.Handler().ServeHTTP(res, req)
-	if res.Code != http.StatusOK || !strings.Contains(res.Body.String(), "go-spa") {
+	if res.Code != http.StatusOK || !strings.Contains(res.Body.String(), `<div id="root"></div>`) {
 		t.Fatalf("SPA route status/body = %d %q", res.Code, res.Body.String())
 	}
 
 	req = httptest.NewRequest(http.MethodGet, "/auth/linuxdo/callback", nil)
 	res = httptest.NewRecorder()
 	app.Handler().ServeHTTP(res, req)
-	if res.Code != http.StatusOK || !strings.Contains(res.Body.String(), "go-spa") {
+	if res.Code != http.StatusOK || !strings.Contains(res.Body.String(), `<div id="root"></div>`) {
 		t.Fatalf("Linuxdo frontend callback status/body = %d %q", res.Code, res.Body.String())
 	}
 
