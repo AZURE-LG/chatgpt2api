@@ -32,6 +32,44 @@ func TestImageWorkspaceDatabaseStoresConversationAndTurns(t *testing.T) {
 	}
 }
 
+func TestImageWorkspaceDatabaseSoftDeletesConversation(t *testing.T) {
+	backend, err := NewDatabaseBackend("sqlite:///:memory:")
+	if err != nil {
+		t.Fatalf("NewDatabaseBackend() error = %v", err)
+	}
+	now := "2026-05-01 18:00:00"
+	deletedAt := "2026-05-01 18:05:00"
+	conversation := ImageConversationRecord{ID: "conv-1", OwnerID: "user-1", OwnerName: "用户一", Title: "测试会话", CreatedAt: now, UpdatedAt: now}
+	if err := backend.UpsertImageConversation(conversation); err != nil {
+		t.Fatalf("UpsertImageConversation() error = %v", err)
+	}
+	if err := backend.SoftDeleteImageConversation("user-1", "conv-1", deletedAt); err != nil {
+		t.Fatalf("SoftDeleteImageConversation() error = %v", err)
+	}
+	items, err := backend.ListImageConversations("user-1")
+	if err != nil {
+		t.Fatalf("ListImageConversations() error = %v", err)
+	}
+	if len(items) != 0 {
+		t.Fatalf("ListImageConversations() = %#v", items)
+	}
+	item, err := backend.GetImageConversation("user-1", "conv-1")
+	if err != nil {
+		t.Fatalf("GetImageConversation() error = %v", err)
+	}
+	if item != nil {
+		t.Fatalf("GetImageConversation() = %#v", item)
+	}
+	var storedDeletedAt string
+	var storedUpdatedAt string
+	if err := backend.db.QueryRow(`SELECT deleted_at, updated_at FROM image_conversations WHERE owner_id = ? AND id = ?`, "user-1", "conv-1").Scan(&storedDeletedAt, &storedUpdatedAt); err != nil {
+		t.Fatalf("QueryRow(deleted conversation) error = %v", err)
+	}
+	if storedDeletedAt != deletedAt || storedUpdatedAt != deletedAt {
+		t.Fatalf("deleted_at/updated_at = %q/%q, want %q", storedDeletedAt, storedUpdatedAt, deletedAt)
+	}
+}
+
 func TestImageWorkspaceDatabaseStoresPrompts(t *testing.T) {
 	backend, err := NewDatabaseBackend("sqlite:///:memory:")
 	if err != nil {

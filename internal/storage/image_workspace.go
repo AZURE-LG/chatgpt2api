@@ -158,10 +158,21 @@ WHERE owner_id = `+b.placeholder(1)+` AND id = `+b.placeholder(2)+` AND deleted_
 }
 
 func (b *DatabaseBackend) SoftDeleteImageConversation(ownerID, id, deletedAt string) error {
+	ownerID = strings.TrimSpace(ownerID)
+	id = strings.TrimSpace(id)
+	deletedAt = strings.TrimSpace(deletedAt)
+	if b.driver == "postgres" {
+		_, err := b.db.Exec(
+			`UPDATE image_conversations SET deleted_at = $3, updated_at = $4
+WHERE owner_id = $1 AND id = $2 AND deleted_at = ''`,
+			ownerID, id, deletedAt, deletedAt,
+		)
+		return err
+	}
 	_, err := b.db.Exec(
-		`UPDATE image_conversations SET deleted_at = `+b.placeholder(3)+`, updated_at = `+b.placeholder(3)+`
-WHERE owner_id = `+b.placeholder(1)+` AND id = `+b.placeholder(2)+` AND deleted_at = ''`,
-		strings.TrimSpace(ownerID), strings.TrimSpace(id), strings.TrimSpace(deletedAt),
+		`UPDATE image_conversations SET deleted_at = ?, updated_at = ?
+WHERE owner_id = ? AND id = ? AND deleted_at = ''`,
+		deletedAt, deletedAt, ownerID, id,
 	)
 	return err
 }
